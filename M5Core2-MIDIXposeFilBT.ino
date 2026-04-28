@@ -56,7 +56,40 @@ enum DisplayMode {
   DIRECT_MODE,
   KEY_MODE,
   INSTANT_MODE,
-  SEQUENCE_MODE
+  SEQUENCE_MODE,
+  MIDI_MANAGE_MODE
+};
+
+enum MidiManagePage {
+  MIDI_PAGE_FILTER,
+  MIDI_PAGE_MAPPER
+};
+
+enum MidiMapperEditPage {
+  MAPPER_PAGE_SOURCE,
+  MAPPER_PAGE_DEST
+};
+
+enum MidiMessageKind {
+  MIDI_KIND_NOTE_OFF,
+  MIDI_KIND_NOTE_ON,
+  MIDI_KIND_KEY_PRESSURE,
+  MIDI_KIND_PROGRAM_CHANGE,
+  MIDI_KIND_CONTROL_CHANGE,
+  MIDI_KIND_CHANNEL_PRESSURE,
+  MIDI_KIND_PITCH_BEND,
+  MIDI_KIND_SYSTEM_EXCLUSIVE,
+  MIDI_KIND_MIDI_TIME_CODE,
+  MIDI_KIND_SONG_POSITION,
+  MIDI_KIND_SONG_SELECT,
+  MIDI_KIND_TUNE_REQUEST,
+  MIDI_KIND_CLOCK,
+  MIDI_KIND_START,
+  MIDI_KIND_CONTINUE,
+  MIDI_KIND_STOP,
+  MIDI_KIND_ACTIVE_SENSE,
+  MIDI_KIND_SYSTEM_RESET,
+  MIDI_KIND_COUNT
 };
 
 // 転調範囲モード（3種類に拡張）
@@ -112,6 +145,55 @@ struct NavButton {
   int x, y, w, h;
 };
 
+struct MidiFilterRule {
+  bool enabled;
+  MidiMessageKind kind;
+  int8_t channel;  // -1 = ALL, 0-15 = MIDI Ch 1-16
+};
+
+struct MidiMapperRule {
+  bool enabled;
+  MidiMessageKind srcKind;
+  int8_t srcChannel;   // -1 = ALL
+  int16_t srcData1;    // -1 = ANY
+  int16_t srcMin;
+  int16_t srcMax;
+  MidiMessageKind dstKind;
+  int8_t dstChannel;   // -1 = KEEP
+  int16_t dstData1;    // -1 = KEEP
+  int16_t dstMin;
+  int16_t dstMax;
+};
+
+struct MidiMessage {
+  uint8_t bytes[3];
+  uint8_t length;
+  MidiMessageKind kind;
+  bool hasChannel;
+  int8_t channel;
+};
+
+// Forward declarations for Arduino's auto-prototype generation.
+const char* getMidiKindLabel(MidiMessageKind kind);
+bool midiKindHasChannel(MidiMessageKind kind);
+uint8_t getMidiStatusForKind(MidiMessageKind kind, uint8_t channel);
+MidiMessageKind getMidiKindFromStatus(uint8_t status);
+uint8_t getMidiMessageLengthForKind(MidiMessageKind kind);
+bool midiKindSupportsData1(MidiMessageKind kind);
+int getMidiValueMax(MidiMessageKind kind);
+int getMidiPrimaryData(const MidiMessage& msg);
+int getMidiValueData(const MidiMessage& msg);
+bool midiFilterRuleMatches(const MidiFilterRule& rule, const MidiMessage& msg);
+bool shouldAllowMidiMessage(const MidiMessage& msg);
+bool midiMapperRuleMatches(const MidiMapperRule& rule, const MidiMessage& msg);
+MidiMessage buildMappedMidiMessage(const MidiMapperRule& rule, const MidiMessage& srcMsg);
+MidiMessage applyMidiMapper(const MidiMessage& srcMsg);
+void formatMidiFilterRuleSummary(const MidiFilterRule& rule, int index, char* out, size_t outSize);
+void formatMidiMapperRuleSummary(const MidiMapperRule& rule, int index, char* out, size_t outSize);
+void adjustWrappedMidiKind(MidiMessageKind& kind, int delta);
+void normalizeMapperRule(MidiMapperRule& rule);
+void handleParsedMidiMessage(const MidiMessage& inMsg);
+
 // Sequence Mode用の設定
 #define SEQ_PATTERN_COUNT 16
 #define SEQ_STEP_COUNT    6
@@ -134,6 +216,23 @@ NavButton seqSaveBtn;
 
 // Instant Mode の 0 ボタン（上段の上、ボタン2個分の幅）
 NavButton instantZeroBtn;
+
+// MIDI Manage mode
+static const int MAX_FILTER_RULES = 8;
+static const int MAX_MAPPER_RULES = 8;
+MidiManagePage midiManagePage = MIDI_PAGE_FILTER;
+MidiMapperEditPage midiMapperEditPage = MAPPER_PAGE_SOURCE;
+bool midiFilterBypass = true;
+bool midiMapperBypass = true;
+MidiFilterRule midiFilterRules[MAX_FILTER_RULES];
+MidiMapperRule midiMapperRules[MAX_MAPPER_RULES];
+int midiFilterRuleCount = 1;
+int midiMapperRuleCount = 1;
+int midiSelectedFilterRule = 0;
+int midiSelectedMapperRule = 0;
+DisplayMode lastTransposeMode = DIRECT_MODE;
+bool btnCLongPressHandled = false;
+const unsigned long MODE_LONG_PRESS_MS = 700;
 
 // Bluetooth HID foot pedal state management
 static portMUX_TYPE g_keyStateMux = portMUX_INITIALIZER_UNLOCKED;
@@ -176,6 +275,339 @@ int8_t clampTranspose(int8_t v) {
   if (v < -12) return -12;
   if (v > 12) return 12;
   return v;
+}
+
+bool touchInRect(TouchPoint_t pos, int x, int y, int w, int h) {
+  return pos.x >= x && pos.x <= x + w && pos.y >= y && pos.y <= y + h;
+}
+
+const char* getMidiKindLabel(MidiMessageKind kind) {
+  static const char* labels[MIDI_KIND_COUNT] = {
+    "NoteOff", "NoteOn", "KeyPrs", "PrgChg", "CtrlChg", "ChPrs", "Bend",
+    "SysEx", "MTC", "SongPos", "SongSel", "TuneReq",
+    "Clock", "Start", "Cont", "Stop", "ActSn", "Reset"
+  };
+  if (kind < 0 || kind >= MIDI_KIND_COUNT) return "Unknown";
+  return labels[kind];
+}
+
+bool midiKindHasChannel(MidiMessageKind kind) {
+  return kind <= MIDI_KIND_PITCH_BEND;
+}
+
+uint8_t getMidiStatusForKind(MidiMessageKind kind, uint8_t channel) {
+  switch (kind) {
+    case MIDI_KIND_NOTE_OFF:         return 0x80 | (channel & 0x0F);
+    case MIDI_KIND_NOTE_ON:          return 0x90 | (channel & 0x0F);
+    case MIDI_KIND_KEY_PRESSURE:     return 0xA0 | (channel & 0x0F);
+    case MIDI_KIND_CONTROL_CHANGE:   return 0xB0 | (channel & 0x0F);
+    case MIDI_KIND_PROGRAM_CHANGE:   return 0xC0 | (channel & 0x0F);
+    case MIDI_KIND_CHANNEL_PRESSURE: return 0xD0 | (channel & 0x0F);
+    case MIDI_KIND_PITCH_BEND:       return 0xE0 | (channel & 0x0F);
+    case MIDI_KIND_SYSTEM_EXCLUSIVE: return 0xF0;
+    case MIDI_KIND_MIDI_TIME_CODE:   return 0xF1;
+    case MIDI_KIND_SONG_POSITION:    return 0xF2;
+    case MIDI_KIND_SONG_SELECT:      return 0xF3;
+    case MIDI_KIND_TUNE_REQUEST:     return 0xF6;
+    case MIDI_KIND_CLOCK:            return 0xF8;
+    case MIDI_KIND_START:            return 0xFA;
+    case MIDI_KIND_CONTINUE:         return 0xFB;
+    case MIDI_KIND_STOP:             return 0xFC;
+    case MIDI_KIND_ACTIVE_SENSE:     return 0xFE;
+    case MIDI_KIND_SYSTEM_RESET:     return 0xFF;
+    default:                         return 0x00;
+  }
+}
+
+MidiMessageKind getMidiKindFromStatus(uint8_t status) {
+  if ((status & 0xF0) == 0x80) return MIDI_KIND_NOTE_OFF;
+  if ((status & 0xF0) == 0x90) return MIDI_KIND_NOTE_ON;
+  if ((status & 0xF0) == 0xA0) return MIDI_KIND_KEY_PRESSURE;
+  if ((status & 0xF0) == 0xB0) return MIDI_KIND_CONTROL_CHANGE;
+  if ((status & 0xF0) == 0xC0) return MIDI_KIND_PROGRAM_CHANGE;
+  if ((status & 0xF0) == 0xD0) return MIDI_KIND_CHANNEL_PRESSURE;
+  if ((status & 0xF0) == 0xE0) return MIDI_KIND_PITCH_BEND;
+
+  switch (status) {
+    case 0xF0: return MIDI_KIND_SYSTEM_EXCLUSIVE;
+    case 0xF1: return MIDI_KIND_MIDI_TIME_CODE;
+    case 0xF2: return MIDI_KIND_SONG_POSITION;
+    case 0xF3: return MIDI_KIND_SONG_SELECT;
+    case 0xF6: return MIDI_KIND_TUNE_REQUEST;
+    case 0xF8: return MIDI_KIND_CLOCK;
+    case 0xFA: return MIDI_KIND_START;
+    case 0xFB: return MIDI_KIND_CONTINUE;
+    case 0xFC: return MIDI_KIND_STOP;
+    case 0xFE: return MIDI_KIND_ACTIVE_SENSE;
+    case 0xFF: return MIDI_KIND_SYSTEM_RESET;
+    default:   return MIDI_KIND_SYSTEM_EXCLUSIVE;
+  }
+}
+
+uint8_t getMidiMessageLengthForKind(MidiMessageKind kind) {
+  switch (kind) {
+    case MIDI_KIND_NOTE_OFF:
+    case MIDI_KIND_NOTE_ON:
+    case MIDI_KIND_KEY_PRESSURE:
+    case MIDI_KIND_CONTROL_CHANGE:
+    case MIDI_KIND_PITCH_BEND:
+    case MIDI_KIND_SONG_POSITION:
+      return 3;
+    case MIDI_KIND_PROGRAM_CHANGE:
+    case MIDI_KIND_CHANNEL_PRESSURE:
+    case MIDI_KIND_MIDI_TIME_CODE:
+    case MIDI_KIND_SONG_SELECT:
+      return 2;
+    default:
+      return 1;
+  }
+}
+
+bool midiKindSupportsData1(MidiMessageKind kind) {
+  switch (kind) {
+    case MIDI_KIND_NOTE_OFF:
+    case MIDI_KIND_NOTE_ON:
+    case MIDI_KIND_KEY_PRESSURE:
+    case MIDI_KIND_CONTROL_CHANGE:
+    case MIDI_KIND_PROGRAM_CHANGE:
+    case MIDI_KIND_MIDI_TIME_CODE:
+    case MIDI_KIND_SONG_SELECT:
+      return true;
+    default:
+      return false;
+  }
+}
+
+int getMidiValueMax(MidiMessageKind kind) {
+  switch (kind) {
+    case MIDI_KIND_PITCH_BEND:
+    case MIDI_KIND_SONG_POSITION:
+      return 16383;
+    default:
+      return 127;
+  }
+}
+
+int clampInt(int value, int minValue, int maxValue) {
+  if (value < minValue) return minValue;
+  if (value > maxValue) return maxValue;
+  return value;
+}
+
+void initMidiManagementDefaults() {
+  midiFilterRuleCount = 1;
+  midiMapperRuleCount = 1;
+  midiSelectedFilterRule = 0;
+  midiSelectedMapperRule = 0;
+
+  midiFilterRules[0].enabled = false;
+  midiFilterRules[0].kind = MIDI_KIND_CONTROL_CHANGE;
+  midiFilterRules[0].channel = -1;
+
+  midiMapperRules[0].enabled = false;
+  midiMapperRules[0].srcKind = MIDI_KIND_CONTROL_CHANGE;
+  midiMapperRules[0].srcChannel = -1;
+  midiMapperRules[0].srcData1 = -1;
+  midiMapperRules[0].srcMin = 0;
+  midiMapperRules[0].srcMax = 127;
+  midiMapperRules[0].dstKind = MIDI_KIND_CONTROL_CHANGE;
+  midiMapperRules[0].dstChannel = -1;
+  midiMapperRules[0].dstData1 = -1;
+  midiMapperRules[0].dstMin = 0;
+  midiMapperRules[0].dstMax = 127;
+}
+
+const char* getChannelLabel(int8_t channel, bool keepLabel) {
+  static char label[8];
+  if (channel < 0) {
+    return keepLabel ? "KEEP" : "ALL";
+  }
+  snprintf(label, sizeof(label), "Ch%02d", channel + 1);
+  return label;
+}
+
+const char* getData1Label(int16_t data1, bool keepLabel) {
+  static char label[8];
+  if (data1 < 0) {
+    return keepLabel ? "KEEP" : "ANY";
+  }
+  snprintf(label, sizeof(label), "%d", data1);
+  return label;
+}
+
+int getMidiPrimaryData(const MidiMessage& msg) {
+  if (msg.length < 2) return 0;
+  return msg.bytes[1];
+}
+
+int getMidiValueData(const MidiMessage& msg) {
+  if (msg.kind == MIDI_KIND_PITCH_BEND || msg.kind == MIDI_KIND_SONG_POSITION) {
+    if (msg.length < 3) return 0;
+    return (msg.bytes[1] & 0x7F) | ((msg.bytes[2] & 0x7F) << 7);
+  }
+  if (msg.length >= 3) return msg.bytes[2];
+  if (msg.length >= 2) return msg.bytes[1];
+  return 0;
+}
+
+int mapMidiValueRange(int value, int srcMin, int srcMax, int dstMin, int dstMax) {
+  srcMin = clampInt(srcMin, 0, 16383);
+  srcMax = clampInt(srcMax, 0, 16383);
+  dstMin = clampInt(dstMin, 0, 16383);
+  dstMax = clampInt(dstMax, 0, 16383);
+
+  if (srcMax < srcMin) srcMax = srcMin;
+  if (dstMax < dstMin) dstMax = dstMin;
+
+  value = clampInt(value, srcMin, srcMax);
+  if (srcMax == srcMin) return dstMin;
+
+  long num = (long)(value - srcMin) * (dstMax - dstMin);
+  long den = (srcMax - srcMin);
+  return dstMin + (int)(num / den);
+}
+
+bool midiFilterRuleMatches(const MidiFilterRule& rule, const MidiMessage& msg) {
+  if (!rule.enabled) return false;
+  if (rule.kind != msg.kind) return false;
+  if (rule.channel >= 0) {
+    if (!msg.hasChannel) return false;
+    if (rule.channel != msg.channel) return false;
+  }
+  return true;
+}
+
+bool shouldAllowMidiMessage(const MidiMessage& msg) {
+  if (midiFilterBypass) return true;
+  for (int i = 0; i < midiFilterRuleCount; i++) {
+    if (midiFilterRuleMatches(midiFilterRules[i], msg)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool midiMapperRuleMatches(const MidiMapperRule& rule, const MidiMessage& msg) {
+  if (!rule.enabled) return false;
+  if (rule.srcKind != msg.kind) return false;
+  if (rule.srcChannel >= 0) {
+    if (!msg.hasChannel) return false;
+    if (rule.srcChannel != msg.channel) return false;
+  }
+  if (rule.srcData1 >= 0 && getMidiPrimaryData(msg) != rule.srcData1) return false;
+
+  int value = getMidiValueData(msg);
+  if (value < rule.srcMin || value > rule.srcMax) return false;
+  return true;
+}
+
+MidiMessage buildMappedMidiMessage(const MidiMapperRule& rule, const MidiMessage& srcMsg) {
+  MidiMessage dstMsg = srcMsg;
+  dstMsg.kind = rule.dstKind;
+  dstMsg.hasChannel = midiKindHasChannel(rule.dstKind);
+  dstMsg.length = getMidiMessageLengthForKind(rule.dstKind);
+
+  uint8_t outChannel = 0;
+  if (dstMsg.hasChannel) {
+    if (rule.dstChannel >= 0) outChannel = rule.dstChannel;
+    else if (srcMsg.hasChannel) outChannel = srcMsg.channel;
+  }
+  dstMsg.channel = dstMsg.hasChannel ? outChannel : -1;
+  dstMsg.bytes[0] = getMidiStatusForKind(rule.dstKind, outChannel);
+
+  int srcPrimary = getMidiPrimaryData(srcMsg);
+  int srcValue = getMidiValueData(srcMsg);
+  int mappedValue = mapMidiValueRange(srcValue, rule.srcMin, rule.srcMax, rule.dstMin, rule.dstMax);
+  int primaryValue = (rule.dstData1 >= 0) ? rule.dstData1 : srcPrimary;
+
+  if (dstMsg.length == 2) {
+    if (midiKindSupportsData1(rule.dstKind)) {
+      dstMsg.bytes[1] = clampInt(primaryValue, 0, 127);
+    } else {
+      dstMsg.bytes[1] = clampInt(mappedValue, 0, 127);
+    }
+  } else if (dstMsg.length == 3) {
+    if (rule.dstKind == MIDI_KIND_PITCH_BEND || rule.dstKind == MIDI_KIND_SONG_POSITION) {
+      int v = clampInt(mappedValue, 0, 16383);
+      dstMsg.bytes[1] = v & 0x7F;
+      dstMsg.bytes[2] = (v >> 7) & 0x7F;
+    } else {
+      dstMsg.bytes[1] = clampInt(primaryValue, 0, 127);
+      dstMsg.bytes[2] = clampInt(mappedValue, 0, 127);
+    }
+  }
+
+  return dstMsg;
+}
+
+MidiMessage applyMidiMapper(const MidiMessage& srcMsg) {
+  if (midiMapperBypass) return srcMsg;
+  for (int i = 0; i < midiMapperRuleCount; i++) {
+    if (midiMapperRuleMatches(midiMapperRules[i], srcMsg)) {
+      return buildMappedMidiMessage(midiMapperRules[i], srcMsg);
+    }
+  }
+  return srcMsg;
+}
+
+void addDefaultFilterRule() {
+  if (midiFilterRuleCount >= MAX_FILTER_RULES) return;
+  MidiFilterRule& rule = midiFilterRules[midiFilterRuleCount];
+  rule.enabled = false;
+  rule.kind = MIDI_KIND_NOTE_OFF;
+  rule.channel = -1;
+  midiSelectedFilterRule = midiFilterRuleCount;
+  midiFilterRuleCount++;
+}
+
+void addDefaultMapperRule() {
+  if (midiMapperRuleCount >= MAX_MAPPER_RULES) return;
+  MidiMapperRule& rule = midiMapperRules[midiMapperRuleCount];
+  rule.enabled = false;
+  rule.srcKind = MIDI_KIND_CONTROL_CHANGE;
+  rule.srcChannel = -1;
+  rule.srcData1 = -1;
+  rule.srcMin = 0;
+  rule.srcMax = 127;
+  rule.dstKind = MIDI_KIND_CONTROL_CHANGE;
+  rule.dstChannel = -1;
+  rule.dstData1 = -1;
+  rule.dstMin = 0;
+  rule.dstMax = 127;
+  midiSelectedMapperRule = midiMapperRuleCount;
+  midiMapperRuleCount++;
+}
+
+void deleteSelectedFilterRule() {
+  if (midiFilterRuleCount <= 1) {
+    midiFilterRules[0].enabled = false;
+    return;
+  }
+  for (int i = midiSelectedFilterRule; i < midiFilterRuleCount - 1; i++) {
+    midiFilterRules[i] = midiFilterRules[i + 1];
+  }
+  midiFilterRuleCount--;
+  if (midiSelectedFilterRule >= midiFilterRuleCount) {
+    midiSelectedFilterRule = midiFilterRuleCount - 1;
+  }
+}
+
+void deleteSelectedMapperRule() {
+  if (midiMapperRuleCount <= 1) {
+    midiMapperRules[0].enabled = false;
+    return;
+  }
+  for (int i = midiSelectedMapperRule; i < midiMapperRuleCount - 1; i++) {
+    midiMapperRules[i] = midiMapperRules[i + 1];
+  }
+  midiMapperRuleCount--;
+  if (midiSelectedMapperRule >= midiMapperRuleCount) {
+    midiSelectedMapperRule = midiMapperRuleCount - 1;
+  }
+}
+
+bool isTransposeDisplayMode(int mode) {
+  return mode == DIRECT_MODE || mode == KEY_MODE || mode == INSTANT_MODE || mode == SEQUENCE_MODE;
 }
 
 // --- BT bond persistence (SD card) ---
@@ -478,6 +910,7 @@ void setup() {
   initKeyModeButtons();
   initInstantModeButtons();
   initSequenceModeButtons();
+  initMidiManagementDefaults();
 
   // SDカード状態確認
   if (SD.cardType() == CARD_NONE) {
@@ -827,11 +1260,19 @@ void drawInterface() {
   // タイトル表示（左上）
   uiFontSmall();
   M5.Lcd.setTextColor(WHITE);
-  uiDrawL("MIDI Transposer", 10, 2);
+  uiDrawL(currentMode == MIDI_MANAGE_MODE ? "MIDI Manager" : "MIDI Transposer", 10, 2);
 
   // ハードウェアボタンのガイド表示（1行目）
   M5.Lcd.setTextColor(DARKGREY);
-  uiDrawL("A:AllOff  B:Range  C:Mode", 10, 22);
+  if (currentMode == MIDI_MANAGE_MODE) {
+    if (midiManagePage == MIDI_PAGE_FILTER) {
+      uiDrawL("A:AllOff  B:Type  C:Next  Hold:Group", 10, 22);
+    } else {
+      uiDrawL("A:AllOff  B:PG1/2  C:Next  Hold:Group", 10, 22);
+    }
+  } else {
+    uiDrawL("A:AllOff  B:Action  C:Next  Hold:Group", 10, 22);
+  }
 
   // All Notes Off状態表示（2行目左）
   M5.Lcd.setTextColor(allNotesOffEnabled ? GREEN : RED);
@@ -859,8 +1300,10 @@ void drawInterface() {
     drawKeyMode();
   } else if (currentMode == INSTANT_MODE) {
     drawInstantMode();
-  } else {
+  } else if (currentMode == SEQUENCE_MODE) {
     drawSequenceMode();
+  } else {
+    drawMidiManageMode();
   }
 
   updateStatusArea();
@@ -1115,6 +1558,223 @@ void drawSequenceMode() {
   uiDrawC(">", seqStepRightBtn.x, seqStepRightBtn.y, seqStepRightBtn.w, seqStepRightBtn.h);
 }
 
+void drawMidiRuleListBox(int x, int y, int w, int h, bool selected) {
+  M5.Lcd.fillRect(x, y, w, h, selected ? DARKGREY : BLACK);
+  M5.Lcd.drawRect(x, y, w, h, selected ? GREEN : DARKGREY);
+}
+
+void drawMidiActionButton(int x, int y, int w, int h, const char* label, uint16_t fillColor) {
+  M5.Lcd.fillRect(x, y, w, h, fillColor);
+  M5.Lcd.drawRect(x, y, w, h, WHITE);
+  uiFontSmall();
+  M5.Lcd.setTextColor(WHITE);
+  uiDrawC(label, x, y, w, h);
+}
+
+int midiManageVisibleRuleRows() { return 2; }
+int midiManageTopButtonY() { return 54; }
+int midiManageTopButtonH() { return 22; }
+int midiManageRuleRowY(int row) { return 82 + row * 24; }
+int midiManageRuleRowH() { return 18; }
+int midiManageActionRowY(int row) { return 130 + row * 26; }
+int midiManageActionRowH() { return 22; }
+int midiManageActionGap() { return 6; }
+int midiManageEditFullRowY(int row) { return 184 + row * 26; }
+int midiManageEditGridRowY(int row) { return 180 + row * 21; }
+int midiManageEditRowH() { return 18; }
+
+void drawMidiInlineEditBox(const char* label, const char* value, int x, int y, int w, int h) {
+  const int arrowW = 24;
+  const int valueX = x + arrowW + 2;
+  const int valueW = w - (arrowW * 2) - 4;
+
+  M5.Lcd.fillRect(x, y, w, h, BLACK);
+  M5.Lcd.drawRect(x, y, w, h, DARKGREY);
+
+  M5.Lcd.fillRect(x, y, arrowW, h, NAVY);
+  M5.Lcd.drawRect(x, y, arrowW, h, WHITE);
+  M5.Lcd.fillRect(x + w - arrowW, y, arrowW, h, NAVY);
+  M5.Lcd.drawRect(x + w - arrowW, y, arrowW, h, WHITE);
+
+  uiFontSmall();
+  M5.Lcd.setTextColor(WHITE);
+  uiDrawC("<", x, y, arrowW, h);
+  uiDrawC(">", x + w - arrowW, y, arrowW, h);
+
+  char text[40];
+  snprintf(text, sizeof(text), "%s %s", label, value);
+  M5.Lcd.setTextColor(CYAN);
+  uiDrawC(text, valueX, y, valueW, h);
+}
+
+void drawMidiHalfEditPair(const char* leftLabel, const char* leftValue,
+                          const char* rightLabel, const char* rightValue,
+                          int y) {
+  drawMidiInlineEditBox(leftLabel, leftValue, 10, y, 146, midiManageEditRowH());
+  drawMidiInlineEditBox(rightLabel, rightValue, 164, y, 146, midiManageEditRowH());
+}
+
+void drawMidiCycleButton(const char* label, const char* value, int x, int y, int w, int h) {
+  M5.Lcd.fillRect(x, y, w, h, NAVY);
+  M5.Lcd.drawRect(x, y, w, h, WHITE);
+
+  char text[40];
+  snprintf(text, sizeof(text), "%s %s", label, value);
+
+  uiFontSmall();
+  M5.Lcd.setTextColor(WHITE);
+  uiDrawC(text, x, y, w, h);
+}
+
+void getMidiActionButtonRect(bool mapperPage, int index, int& x, int& y, int& w, int& h) {
+  const int gap = midiManageActionGap();
+  const int rowH = midiManageActionRowH();
+  h = rowH;
+
+  if (!mapperPage) {
+    if (index <= 2) {
+      y = midiManageActionRowY(0);
+      w = 96;
+      x = 10 + index * (w + gap);
+    } else {
+      y = midiManageActionRowY(1);
+      w = 147;
+      x = (index == 3) ? 10 : 163;
+    }
+    return;
+  }
+
+  y = midiManageActionRowY(index / 3);
+  w = 96;
+  x = 10 + (index % 3) * (w + gap);
+}
+
+int getMidiInlineEditDelta(TouchPoint_t pos, int x, int y, int w, int h) {
+  const int arrowW = 24;
+  if (touchInRect(pos, x, y, arrowW, h)) return -1;
+  if (touchInRect(pos, x + w - arrowW, y, arrowW, h)) return 1;
+  return 0;
+}
+
+void formatMidiFilterRuleSummary(const MidiFilterRule& rule, int index, char* out, size_t outSize) {
+  snprintf(out, outSize, "%d %c %s %s",
+           index + 1,
+           rule.enabled ? '*' : '-',
+           getChannelLabel(rule.channel, false),
+           getMidiKindLabel(rule.kind));
+}
+
+void formatMidiMapperRuleSummary(const MidiMapperRule& rule, int index, char* out, size_t outSize) {
+  snprintf(out, outSize, "%d %c %s %s %s %d>%s %s %s %d",
+           index + 1,
+           rule.enabled ? '*' : '-',
+           getMidiKindLabel(rule.srcKind),
+           getChannelLabel(rule.srcChannel, false),
+           getData1Label(rule.srcData1, false),
+           rule.srcMin,
+           getMidiKindLabel(rule.dstKind),
+           getChannelLabel(rule.dstChannel, true),
+           getData1Label(rule.dstData1, true),
+           rule.dstMin);
+}
+
+void drawMidiManageMode() {
+  const int topY = midiManageTopButtonY();
+  const int topH = midiManageTopButtonH();
+
+  drawMidiActionButton(10, topY, 92, topH, "FILTER", midiManagePage == MIDI_PAGE_FILTER ? GREEN : NAVY);
+  drawMidiActionButton(108, topY, 92, topH, "MAPPER", midiManagePage == MIDI_PAGE_MAPPER ? GREEN : NAVY);
+
+  bool bypass = (midiManagePage == MIDI_PAGE_FILTER) ? midiFilterBypass : midiMapperBypass;
+  drawMidiActionButton(206, topY, 104, topH, bypass ? "BYPASS" : "ACTIVE", bypass ? ORANGE : BLUE);
+
+  int selectedIndex = (midiManagePage == MIDI_PAGE_FILTER) ? midiSelectedFilterRule : midiSelectedMapperRule;
+  int ruleCount = (midiManagePage == MIDI_PAGE_FILTER) ? midiFilterRuleCount : midiMapperRuleCount;
+  int visibleStart = selectedIndex - 1;
+  if (visibleStart < 0) visibleStart = 0;
+  if (visibleStart > ruleCount - midiManageVisibleRuleRows()) visibleStart = ruleCount - midiManageVisibleRuleRows();
+  if (visibleStart < 0) visibleStart = 0;
+
+  uiFontSmall();
+  for (int i = 0; i < midiManageVisibleRuleRows(); i++) {
+    int ruleIndex = visibleStart + i;
+    if (ruleIndex >= ruleCount) break;
+
+    int rowY = midiManageRuleRowY(i);
+    drawMidiRuleListBox(10, rowY, 300, midiManageRuleRowH(), ruleIndex == selectedIndex);
+
+    char line[80];
+    if (midiManagePage == MIDI_PAGE_FILTER) {
+      formatMidiFilterRuleSummary(midiFilterRules[ruleIndex], ruleIndex, line, sizeof(line));
+    } else {
+      formatMidiMapperRuleSummary(midiMapperRules[ruleIndex], ruleIndex, line, sizeof(line));
+    }
+    M5.Lcd.setTextColor(ruleIndex == selectedIndex ? GREEN : WHITE);
+    uiDrawL(line, 14, rowY + 3);
+  }
+
+  if (midiManagePage == MIDI_PAGE_FILTER) {
+    int x, y, w, h;
+    for (int i = 0; i < 5; i++) {
+      getMidiActionButtonRect(false, i, x, y, w, h);
+      const char* label = "";
+      uint16_t color = NAVY;
+      if (i == 0) { label = midiFilterRules[midiSelectedFilterRule].enabled ? "EN" : "DIS"; color = BLUE; }
+      if (i == 1) { label = "ADD"; color = BLUE; }
+      if (i == 2) { label = "DEL"; color = RED; }
+      if (i == 3) { label = "UP"; color = NAVY; }
+      if (i == 4) { label = "DOWN"; color = NAVY; }
+      drawMidiActionButton(x, y, w, h, label, color);
+    }
+
+    drawMidiCycleButton("Type", getMidiKindLabel(midiFilterRules[midiSelectedFilterRule].kind),
+                        10, midiManageEditFullRowY(0), 300, 20);
+    drawMidiInlineEditBox("Ch", getChannelLabel(midiFilterRules[midiSelectedFilterRule].channel, false),
+                          10, midiManageEditFullRowY(1), 300, 20);
+    M5.Lcd.setTextColor(DARKGREY);
+    uiDrawL("Filter blocks matching messages before mapper.", 10, 236);
+  } else {
+    char pageLabel[8];
+    snprintf(pageLabel, sizeof(pageLabel), "PG%d", midiMapperEditPage == MAPPER_PAGE_SOURCE ? 1 : 2);
+    int x, y, w, h;
+    for (int i = 0; i < 6; i++) {
+      getMidiActionButtonRect(true, i, x, y, w, h);
+      const char* label = "";
+      uint16_t color = NAVY;
+      if (i == 0) { label = midiMapperRules[midiSelectedMapperRule].enabled ? "EN" : "DIS"; color = BLUE; }
+      if (i == 1) { label = "ADD"; color = BLUE; }
+      if (i == 2) { label = "DEL"; color = RED; }
+      if (i == 3) { label = "UP"; color = NAVY; }
+      if (i == 4) { label = "DOWN"; color = NAVY; }
+      if (i == 5) { label = pageLabel; color = NAVY; }
+      drawMidiActionButton(x, y, w, h, label, color);
+    }
+
+    MidiMapperRule& rule = midiMapperRules[midiSelectedMapperRule];
+    if (midiMapperEditPage == MAPPER_PAGE_SOURCE) {
+      char minStr[12], maxStr[12];
+      drawMidiHalfEditPair("Type", getMidiKindLabel(rule.srcKind),
+                           "Ch", getChannelLabel(rule.srcChannel, false),
+                           midiManageEditGridRowY(0));
+      drawMidiInlineEditBox("Data1", getData1Label(rule.srcData1, false),
+                            10, midiManageEditGridRowY(1), 300, midiManageEditRowH());
+      snprintf(minStr, sizeof(minStr), "%d", rule.srcMin);
+      snprintf(maxStr, sizeof(maxStr), "%d", rule.srcMax);
+      drawMidiHalfEditPair("Min", minStr, "Max", maxStr, midiManageEditGridRowY(2));
+    } else {
+      char minStr[12], maxStr[12];
+      drawMidiHalfEditPair("Type", getMidiKindLabel(rule.dstKind),
+                           "Ch", getChannelLabel(rule.dstChannel, true),
+                           midiManageEditGridRowY(0));
+      drawMidiInlineEditBox("Data1", getData1Label(rule.dstData1, true),
+                            10, midiManageEditGridRowY(1), 300, midiManageEditRowH());
+      snprintf(minStr, sizeof(minStr), "%d", rule.dstMin);
+      snprintf(maxStr, sizeof(maxStr), "%d", rule.dstMax);
+      drawMidiHalfEditPair("Min", minStr, "Max", maxStr, midiManageEditGridRowY(2));
+    }
+  }
+}
+
 void updateStatusArea() {
   // 右上のステータス表示エリア
   M5.Lcd.fillRect(190, 0, 130, 40, BLACK);
@@ -1273,8 +1933,74 @@ void processFootPedal() {
   }
 }
 
+void enterDisplayMode(int newMode) {
+  currentMode = (DisplayMode)newMode;
+
+  if (currentMode == DIRECT_MODE) {
+    setCurrentTransposeButton();
+  } else if (currentMode == KEY_MODE) {
+    selectedMajorKey = -1;
+    selectedMinorKey = -1;
+  } else if (currentMode == SEQUENCE_MODE) {
+    handleTransposeChange(seqPatterns[seqCurrentPattern][seqCurrentStep]);
+  }
+
+  if (isTransposeDisplayMode(currentMode)) {
+    lastTransposeMode = currentMode;
+  }
+
+  needFullRedraw = true;
+}
+
+void advanceDisplayMode() {
+  sendAllNotesOff();
+  delay(10);
+
+  if (currentMode == MIDI_MANAGE_MODE) {
+    DisplayMode restoreMode = isTransposeDisplayMode(lastTransposeMode) ? lastTransposeMode : DIRECT_MODE;
+    enterDisplayMode(restoreMode);
+    Serial.printf("Group: TRANSPOSE (%d)\n", restoreMode);
+  } else {
+    if (isTransposeDisplayMode(currentMode)) {
+      lastTransposeMode = currentMode;
+    }
+    enterDisplayMode(MIDI_MANAGE_MODE);
+    Serial.println("Group: MIDI_MANAGE");
+  }
+}
+
+void advanceSubMode() {
+  if (currentMode == MIDI_MANAGE_MODE) {
+    midiManagePage = (midiManagePage == MIDI_PAGE_FILTER) ? MIDI_PAGE_MAPPER : MIDI_PAGE_FILTER;
+    needFullRedraw = true;
+    Serial.printf("MIDI page: %s\n", midiManagePage == MIDI_PAGE_FILTER ? "FILTER" : "MAPPER");
+    return;
+  }
+
+  sendAllNotesOff();
+  delay(10);
+
+  if (currentMode == DIRECT_MODE) enterDisplayMode(KEY_MODE);
+  else if (currentMode == KEY_MODE) enterDisplayMode(INSTANT_MODE);
+  else if (currentMode == INSTANT_MODE) enterDisplayMode(SEQUENCE_MODE);
+  else enterDisplayMode(DIRECT_MODE);
+
+  const char* modeNames[] = {"DIRECT", "KEY", "INSTANT", "SEQUENCE"};
+  Serial.printf("Transpose mode: %s\n", modeNames[currentMode]);
+}
+
 void processHardwareButtons() {
   unsigned long now = millis();
+  if (M5.BtnC.isPressed()) {
+    if (!btnCLongPressHandled && M5.BtnC.pressedFor(MODE_LONG_PRESS_MS)) {
+      advanceDisplayMode();
+      btnCLongPressHandled = true;
+      lastButtonCheck = now;
+    }
+  } else {
+    btnCLongPressHandled = false;
+  }
+
   if (now - lastButtonCheck < BUTTON_DEBOUNCE) return;
 
   // 左ボタン（A）: All Notes Off切り替え
@@ -1283,6 +2009,7 @@ void processHardwareButtons() {
     needFullRedraw = true;
     lastButtonCheck = now;
     Serial.printf("All Notes Off: %s\n", allNotesOffEnabled ? "ON" : "OFF");
+    return;
   }
 
   // 真ん中ボタン（B）
@@ -1306,15 +2033,33 @@ void processHardwareButtons() {
       selectedMajorKey = -1;
       selectedMinorKey = -1;
       needFullRedraw = true;
+    } else if (currentMode == MIDI_MANAGE_MODE) {
+      if (midiManagePage == MIDI_PAGE_FILTER) {
+        adjustWrappedMidiKind(midiFilterRules[midiSelectedFilterRule].kind, 1);
+        if (!midiKindHasChannel(midiFilterRules[midiSelectedFilterRule].kind)) {
+          midiFilterRules[midiSelectedFilterRule].channel = -1;
+        }
+        Serial.printf("Filter type: %s\n", getMidiKindLabel(midiFilterRules[midiSelectedFilterRule].kind));
+      } else {
+        midiMapperEditPage = (midiMapperEditPage == MAPPER_PAGE_SOURCE) ? MAPPER_PAGE_DEST : MAPPER_PAGE_SOURCE;
+        Serial.printf("Mapper edit page: PG%d\n", midiMapperEditPage == MAPPER_PAGE_SOURCE ? 1 : 2);
+      }
+      needFullRedraw = true;
     } else {
       // INSTANT_MODE, SEQUENCE_MODE: 何もしない
     }
     lastButtonCheck = now;
-    Serial.println("Range/Mode toggled (B)");
+    Serial.println("Mode action (B)");
+    return;
   }
 
   // 右ボタン（C）: モード切り替え（DIRECT→KEY→INSTANT→SEQUENCE→…）
-  if (M5.BtnC.wasPressed()) {
+  if (M5.BtnC.wasPressed() && !btnCLongPressHandled) {
+    advanceSubMode();
+    lastButtonCheck = now;
+  }
+
+  if (false && M5.BtnC.wasPressed()) {
     sendAllNotesOff();
     delay(10);
 
@@ -1417,8 +2162,10 @@ void processTouch() {
     processKeyModeTouch(pos);
   } else if (currentMode == INSTANT_MODE) {
     processInstantModeTouch(pos);
-  } else {
+  } else if (currentMode == SEQUENCE_MODE) {
     processSequenceModeTouch(pos);
+  } else {
+    processMidiManageTouch(pos);
   }
 }
 
@@ -1622,6 +2369,217 @@ void processSequenceModeTouch(TouchPoint_t pos) {
   }
 }
 
+void adjustWrappedChannel(int8_t& channel, int delta) {
+  if (delta > 0) channel = (channel >= 15) ? -1 : channel + 1;
+  else channel = (channel < 0) ? 15 : channel - 1;
+}
+
+void adjustWrappedData1(int16_t& data1, int delta) {
+  if (delta > 0) data1 = (data1 >= 127) ? -1 : data1 + 1;
+  else data1 = (data1 < 0) ? 127 : data1 - 1;
+}
+
+void adjustWrappedMidiKind(MidiMessageKind& kind, int delta) {
+  int value = (int)kind + delta;
+  if (value < 0) value = MIDI_KIND_COUNT - 1;
+  if (value >= MIDI_KIND_COUNT) value = 0;
+  kind = (MidiMessageKind)value;
+}
+
+void normalizeMapperRule(MidiMapperRule& rule) {
+  int srcMaxValue = getMidiValueMax(rule.srcKind);
+  int dstMaxValue = getMidiValueMax(rule.dstKind);
+
+  if (!midiKindSupportsData1(rule.srcKind)) rule.srcData1 = -1;
+  if (!midiKindSupportsData1(rule.dstKind)) rule.dstData1 = -1;
+
+  rule.srcMin = clampInt(rule.srcMin, 0, srcMaxValue);
+  rule.srcMax = clampInt(rule.srcMax, 0, srcMaxValue);
+  rule.dstMin = clampInt(rule.dstMin, 0, dstMaxValue);
+  rule.dstMax = clampInt(rule.dstMax, 0, dstMaxValue);
+
+  if (rule.srcMin > rule.srcMax) rule.srcMin = rule.srcMax;
+  if (rule.dstMin > rule.dstMax) rule.dstMin = rule.dstMax;
+}
+
+void processMidiManageTouch(TouchPoint_t pos) {
+  const int topY = midiManageTopButtonY();
+  const int topH = midiManageTopButtonH();
+
+  if (touchInRect(pos, 10, topY, 92, topH)) {
+    midiManagePage = MIDI_PAGE_FILTER;
+    needFullRedraw = true;
+    return;
+  }
+  if (touchInRect(pos, 108, topY, 92, topH)) {
+    midiManagePage = MIDI_PAGE_MAPPER;
+    needFullRedraw = true;
+    return;
+  }
+  if (touchInRect(pos, 206, topY, 104, topH)) {
+    if (midiManagePage == MIDI_PAGE_FILTER) midiFilterBypass = !midiFilterBypass;
+    else midiMapperBypass = !midiMapperBypass;
+    needFullRedraw = true;
+    return;
+  }
+
+  int selectedIndex = (midiManagePage == MIDI_PAGE_FILTER) ? midiSelectedFilterRule : midiSelectedMapperRule;
+  int ruleCount = (midiManagePage == MIDI_PAGE_FILTER) ? midiFilterRuleCount : midiMapperRuleCount;
+  int visibleStart = selectedIndex - 1;
+  if (visibleStart < 0) visibleStart = 0;
+  if (visibleStart > ruleCount - midiManageVisibleRuleRows()) visibleStart = ruleCount - midiManageVisibleRuleRows();
+  if (visibleStart < 0) visibleStart = 0;
+
+  for (int i = 0; i < midiManageVisibleRuleRows(); i++) {
+    int ruleIndex = visibleStart + i;
+    if (ruleIndex >= ruleCount) break;
+    int rowY = midiManageRuleRowY(i);
+    if (touchInRect(pos, 10, rowY, 300, midiManageRuleRowH())) {
+      if (midiManagePage == MIDI_PAGE_FILTER) midiSelectedFilterRule = ruleIndex;
+      else midiSelectedMapperRule = ruleIndex;
+      needFullRedraw = true;
+      return;
+    }
+  }
+
+  if (midiManagePage == MIDI_PAGE_FILTER) {
+    for (int i = 0; i < 5; i++) {
+      int x, y, w, h;
+      getMidiActionButtonRect(false, i, x, y, w, h);
+      if (!touchInRect(pos, x, y, w, h)) continue;
+      if (i == 0) midiFilterRules[midiSelectedFilterRule].enabled = !midiFilterRules[midiSelectedFilterRule].enabled;
+      if (i == 1) addDefaultFilterRule();
+      if (i == 2) deleteSelectedFilterRule();
+      if (i == 3 && midiSelectedFilterRule > 0) {
+        MidiFilterRule tmp = midiFilterRules[midiSelectedFilterRule - 1];
+        midiFilterRules[midiSelectedFilterRule - 1] = midiFilterRules[midiSelectedFilterRule];
+        midiFilterRules[midiSelectedFilterRule] = tmp;
+        midiSelectedFilterRule--;
+      }
+      if (i == 4 && midiSelectedFilterRule < midiFilterRuleCount - 1) {
+        MidiFilterRule tmp = midiFilterRules[midiSelectedFilterRule + 1];
+        midiFilterRules[midiSelectedFilterRule + 1] = midiFilterRules[midiSelectedFilterRule];
+        midiFilterRules[midiSelectedFilterRule] = tmp;
+        midiSelectedFilterRule++;
+      }
+      needFullRedraw = true;
+      return;
+    }
+
+    if (touchInRect(pos, 10, midiManageEditFullRowY(0), 300, 20)) {
+      adjustWrappedMidiKind(midiFilterRules[midiSelectedFilterRule].kind, 1);
+      if (!midiKindHasChannel(midiFilterRules[midiSelectedFilterRule].kind)) {
+        midiFilterRules[midiSelectedFilterRule].channel = -1;
+      }
+      needFullRedraw = true;
+      return;
+    }
+
+    int delta = getMidiInlineEditDelta(pos, 10, midiManageEditFullRowY(1), 300, 20);
+    if (delta != 0) {
+      adjustWrappedChannel(midiFilterRules[midiSelectedFilterRule].channel, delta);
+      needFullRedraw = true;
+      return;
+    }
+  } else {
+    MidiMapperRule& rule = midiMapperRules[midiSelectedMapperRule];
+
+    for (int i = 0; i < 6; i++) {
+      int x, y, w, h;
+      getMidiActionButtonRect(true, i, x, y, w, h);
+      if (!touchInRect(pos, x, y, w, h)) continue;
+      if (i == 0) rule.enabled = !rule.enabled;
+      if (i == 1) addDefaultMapperRule();
+      if (i == 2) deleteSelectedMapperRule();
+      if (i == 3 && midiSelectedMapperRule > 0) {
+        MidiMapperRule tmp = midiMapperRules[midiSelectedMapperRule - 1];
+        midiMapperRules[midiSelectedMapperRule - 1] = rule;
+        midiMapperRules[midiSelectedMapperRule] = tmp;
+        midiSelectedMapperRule--;
+      }
+      if (i == 4 && midiSelectedMapperRule < midiMapperRuleCount - 1) {
+        MidiMapperRule tmp = midiMapperRules[midiSelectedMapperRule + 1];
+        midiMapperRules[midiSelectedMapperRule + 1] = rule;
+        midiMapperRules[midiSelectedMapperRule] = tmp;
+        midiSelectedMapperRule++;
+      }
+      if (i == 5) midiMapperEditPage = (midiMapperEditPage == MAPPER_PAGE_SOURCE) ? MAPPER_PAGE_DEST : MAPPER_PAGE_SOURCE;
+      needFullRedraw = true;
+      return;
+    }
+
+    if (midiMapperEditPage == MAPPER_PAGE_SOURCE) {
+      int delta = getMidiInlineEditDelta(pos, 10, midiManageEditGridRowY(0), 146, midiManageEditRowH());
+      if (delta != 0) {
+        adjustWrappedMidiKind(rule.srcKind, delta);
+        normalizeMapperRule(rule);
+        needFullRedraw = true;
+        return;
+      }
+      delta = getMidiInlineEditDelta(pos, 164, midiManageEditGridRowY(0), 146, midiManageEditRowH());
+      if (delta != 0) {
+        adjustWrappedChannel(rule.srcChannel, delta);
+        needFullRedraw = true;
+        return;
+      }
+      delta = getMidiInlineEditDelta(pos, 10, midiManageEditGridRowY(1), 300, midiManageEditRowH());
+      if (delta != 0 && midiKindSupportsData1(rule.srcKind)) {
+        adjustWrappedData1(rule.srcData1, delta);
+        needFullRedraw = true;
+        return;
+      }
+      delta = getMidiInlineEditDelta(pos, 10, midiManageEditGridRowY(2), 146, midiManageEditRowH());
+      if (delta != 0) {
+        rule.srcMin = clampInt(rule.srcMin + delta, 0, getMidiValueMax(rule.srcKind));
+        if (rule.srcMin > rule.srcMax) rule.srcMax = rule.srcMin;
+        needFullRedraw = true;
+        return;
+      }
+      delta = getMidiInlineEditDelta(pos, 164, midiManageEditGridRowY(2), 146, midiManageEditRowH());
+      if (delta != 0) {
+        rule.srcMax = clampInt(rule.srcMax + delta, 0, getMidiValueMax(rule.srcKind));
+        if (rule.srcMax < rule.srcMin) rule.srcMin = rule.srcMax;
+        needFullRedraw = true;
+        return;
+      }
+    } else {
+      int delta = getMidiInlineEditDelta(pos, 10, midiManageEditGridRowY(0), 146, midiManageEditRowH());
+      if (delta != 0) {
+        adjustWrappedMidiKind(rule.dstKind, delta);
+        normalizeMapperRule(rule);
+        needFullRedraw = true;
+        return;
+      }
+      delta = getMidiInlineEditDelta(pos, 164, midiManageEditGridRowY(0), 146, midiManageEditRowH());
+      if (delta != 0) {
+        adjustWrappedChannel(rule.dstChannel, delta);
+        needFullRedraw = true;
+        return;
+      }
+      delta = getMidiInlineEditDelta(pos, 10, midiManageEditGridRowY(1), 300, midiManageEditRowH());
+      if (delta != 0 && midiKindSupportsData1(rule.dstKind)) {
+        adjustWrappedData1(rule.dstData1, delta);
+        needFullRedraw = true;
+        return;
+      }
+      delta = getMidiInlineEditDelta(pos, 10, midiManageEditGridRowY(2), 146, midiManageEditRowH());
+      if (delta != 0) {
+        rule.dstMin = clampInt(rule.dstMin + delta, 0, getMidiValueMax(rule.dstKind));
+        if (rule.dstMin > rule.dstMax) rule.dstMax = rule.dstMin;
+        needFullRedraw = true;
+        return;
+      }
+      delta = getMidiInlineEditDelta(pos, 164, midiManageEditGridRowY(2), 146, midiManageEditRowH());
+      if (delta != 0) {
+        rule.dstMax = clampInt(rule.dstMax + delta, 0, getMidiValueMax(rule.dstKind));
+        if (rule.dstMax < rule.dstMin) rule.dstMin = rule.dstMax;
+        needFullRedraw = true;
+        return;
+      }
+    }
+  }
+}
+
 void sendAllNotesOff() {
   for (int channel = 0; channel < 16; channel++) {
     Serial2.write(0xB0 | channel);
@@ -1651,70 +2609,121 @@ void processMIDI() {
   }
 }
 
+void handleParsedMidiMessage(const MidiMessage& inMsg) {
+  if (!shouldAllowMidiMessage(inMsg)) return;
+  MidiMessage mappedMsg = applyMidiMapper(inMsg);
+  sendMIDIMessage(mappedMsg.bytes, mappedMsg.length);
+}
+
 void processMIDIByte(uint8_t midiData) {
   static uint8_t midiBuffer[3];
   static int bufferIndex = 0;
   static uint8_t runningStatus = 0;
+  static uint8_t currentStatus = 0;
   static bool inSysEx = false;
-  
+  static bool allowCurrentSysEx = true;
+
   if (midiData >= 0xF8) {
-    Serial2.write(midiData);
-    midiOutCount++;
+    MidiMessage msg;
+    msg.bytes[0] = midiData;
+    msg.length = 1;
+    msg.kind = getMidiKindFromStatus(midiData);
+    msg.hasChannel = false;
+    msg.channel = -1;
+    handleParsedMidiMessage(msg);
     return;
   }
-  
+
   if (inSysEx) {
-    Serial2.write(midiData);
-    midiOutCount++;
+    if (allowCurrentSysEx) {
+      Serial2.write(midiData);
+      midiOutCount++;
+    }
     if (midiData == 0xF7) {
       inSysEx = false;
     }
     return;
   }
-  
+
   if (midiData == 0xF0) {
+    MidiMessage sysExMsg;
+    sysExMsg.bytes[0] = 0xF0;
+    sysExMsg.length = 1;
+    sysExMsg.kind = MIDI_KIND_SYSTEM_EXCLUSIVE;
+    sysExMsg.hasChannel = false;
+    sysExMsg.channel = -1;
+
     inSysEx = true;
-    Serial2.write(midiData);
-    midiOutCount++;
-    return;
-  }
-  
-  if (midiData & 0x80) {
-    runningStatus = midiData;
-    midiBuffer[0] = midiData;
-    bufferIndex = 1;
-    
-    if (midiData >= 0xF0 && midiData < 0xF8) {
+    allowCurrentSysEx = shouldAllowMidiMessage(sysExMsg);
+    if (allowCurrentSysEx) {
       Serial2.write(midiData);
       midiOutCount++;
+    }
+    return;
+  }
+
+  if (midiData & 0x80) {
+    currentStatus = midiData;
+    midiBuffer[0] = midiData;
+    bufferIndex = 1;
+
+    if (midiData < 0xF0) runningStatus = midiData;
+    else runningStatus = 0;
+
+    int messageLength = getMIDIMessageLength(currentStatus);
+    if (messageLength == 1) {
+      MidiMessage msg;
+      msg.bytes[0] = currentStatus;
+      msg.length = 1;
+      msg.kind = getMidiKindFromStatus(currentStatus);
+      msg.hasChannel = false;
+      msg.channel = -1;
+      handleParsedMidiMessage(msg);
+      bufferIndex = 0;
       return;
     }
-  } else if (runningStatus != 0) {
+  } else if (bufferIndex > 0) {
     midiBuffer[bufferIndex++] = midiData;
+  } else if (runningStatus != 0) {
+    currentStatus = runningStatus;
+    midiBuffer[0] = currentStatus;
+    midiBuffer[1] = midiData;
+    bufferIndex = 2;
   } else {
     return;
   }
-  
-  int messageLength = getMIDIMessageLength(runningStatus);
+
+  int messageLength = getMIDIMessageLength(currentStatus);
   if (bufferIndex >= messageLength) {
-    sendMIDIMessage(midiBuffer, messageLength);
-    bufferIndex = 1;
+    MidiMessage msg;
+    msg.length = messageLength;
+    msg.kind = getMidiKindFromStatus(currentStatus);
+    msg.hasChannel = midiKindHasChannel(msg.kind);
+    msg.channel = msg.hasChannel ? (currentStatus & 0x0F) : -1;
+    for (int i = 0; i < messageLength; i++) {
+      msg.bytes[i] = midiBuffer[i];
+    }
+    handleParsedMidiMessage(msg);
+    bufferIndex = 0;
   }
 }
 
 int getMIDIMessageLength(uint8_t status) {
-  uint8_t messageType = status & 0xF0;
-  
-  switch (messageType) {
-    case 0x80:
-    case 0x90:
-    case 0xA0:
-    case 0xB0:
-    case 0xE0:
-      return 3;
-    case 0xC0:
-    case 0xD0:
+  if ((status & 0xF0) == 0x80 || (status & 0xF0) == 0x90 ||
+      (status & 0xF0) == 0xA0 || (status & 0xF0) == 0xB0 ||
+      (status & 0xF0) == 0xE0) {
+    return 3;
+  }
+  if ((status & 0xF0) == 0xC0 || (status & 0xF0) == 0xD0) {
+    return 2;
+  }
+
+  switch (status) {
+    case 0xF1:
+    case 0xF3:
       return 2;
+    case 0xF2:
+      return 3;
     default:
       return 1;
   }
