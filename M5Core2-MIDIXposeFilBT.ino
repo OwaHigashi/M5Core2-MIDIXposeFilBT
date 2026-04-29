@@ -1,4 +1,5 @@
 #include <M5Core2.h>
+#include <ctype.h>
 
 // for SD-Updater
 #define SDU_ENABLE_GZ
@@ -50,6 +51,7 @@ static const uint8_t PEDAL_RIGHT_KEY = 0x51; // HID keyboard Down Arrow
 // 画面サイズ
 #define SCREEN_WIDTH 320
 #define SCREEN_HEIGHT 240
+#define USB_COMMAND_BUFFER_SIZE 128
 
 // モード定義
 enum DisplayMode {
@@ -139,6 +141,9 @@ const unsigned long BUTTON_DEBOUNCE = 200;
 
 // タッチ入力のラッチ（押しっぱなし連続反応を抑止）
 bool touchWasActive = false;
+char usbCommandBuffer[USB_COMMAND_BUFFER_SIZE];
+size_t usbCommandLength = 0;
+volatile bool g_usbBinaryTransferActive = false;
 
 // 汎用ナビゲーションボタン構造体
 struct NavButton {
@@ -193,6 +198,32 @@ void formatMidiMapperRuleSummary(const MidiMapperRule& rule, int index, char* ou
 void adjustWrappedMidiKind(MidiMessageKind& kind, int delta);
 void normalizeMapperRule(MidiMapperRule& rule);
 void handleParsedMidiMessage(const MidiMessage& inMsg);
+void processUsbSerialCommands();
+void handleUsbSerialCommand(char* line);
+void printUsbSerialHelp();
+void printUsbSerialStatus();
+void sendUsbSerialScreenshot(const char* formatToken);
+void dispatchTouchPoint(TouchPoint_t pos);
+void injectTouchPoint(int16_t x, int16_t y);
+void handleButtonAAction();
+void handleButtonBAction();
+void handleButtonCShortAction();
+void handleButtonCLongAction();
+bool setModeFromCommand(const char* modeName);
+bool setGroupFromCommand(const char* groupName);
+bool parseIntValue(const char* token, int& outValue);
+bool tokenEqualsIgnoreCase(const char* lhs, const char* rhs);
+const char* getDisplayModeLabel(DisplayMode mode);
+const char* getBtStatusLabel(BT_STATUS status);
+bool isUsbBinaryTransferActive(void);
+int getTrackedNoteStateIndex(uint8_t midiNote, uint8_t channel);
+void clearTrackedNoteStates(void);
+bool isMidiInputIdle(unsigned long now);
+void processDeferredStorageTasks(unsigned long now);
+void handleTransposeChange(int8_t newTransposeValue);
+void processTouch(void);
+void sendAllNotesOff(void);
+void processMIDI(void);
 
 // Sequence Mode用の設定
 #define SEQ_PATTERN_COUNT 16
@@ -249,12 +280,17 @@ bool allNotesOffEnabled = false;
 // MIDI統計情報
 unsigned long midiInCount = 0;
 unsigned long midiOutCount = 0;
+unsigned long g_lastMidiInputAt = 0;
+bool g_btBondSavePending = false;
+bool g_seqSavePending = false;
 
 // アクティブなノート追跡（88鍵盤対応）
 // 標準的な88鍵盤: A0(21) から C8(108)
 #define PIANO_LOWEST_NOTE 21   // A0
 #define PIANO_HIGHEST_NOTE 108 // C8
 #define PIANO_KEY_COUNT 88
+#define MIDI_CHANNEL_COUNT 16
+#define TRACKED_NOTE_STATE_COUNT (PIANO_KEY_COUNT * MIDI_CHANNEL_COUNT)
 
 struct NoteState {
   bool isActive;
@@ -264,10 +300,10 @@ struct NoteState {
 };
 
 // 現在押されている鍵盤の状態（88鍵盤分）
-NoteState currentNoteStates[PIANO_KEY_COUNT];
+NoteState currentNoteStates[TRACKED_NOTE_STATE_COUNT];
 
 // 転調変更時の一時保存用
-NoteState savedNoteStates[PIANO_KEY_COUNT];
+NoteState savedNoteStates[TRACKED_NOTE_STATE_COUNT];
 int8_t savedTranspose = 0;
 
 // ユーティリティ：-12〜+12にクランプ
@@ -884,16 +920,20 @@ void key_callback(uint8_t *p_msg)
 void setup() {
   M5.begin(true, true, true, true);
 
+  // LCD に直接描画する (PSRAM スプライトの fillRect memcpy バグを回避)。
+  // スクリーンショットも公式 M5Stack の TFT_Screen_Capture と同様、
+  // LCD GRAM から行ごと readRectRGB で吸い出す。
+
   // for SD-Updater
   checkSDUpdater( SD, MENU_BIN, 2000, TFCARD_CS_PIN );
 
   Serial.begin(115200);
   Serial2.begin(31250, SERIAL_8N1, RXD2, TXD2);
-  Serial2.setRxBufferSize(256);
-  Serial2.setTxBufferSize(256);
+  Serial2.setRxBufferSize(1024);
+  Serial2.setTxBufferSize(512);
   
   // ノート状態の初期化
-  for (int i = 0; i < PIANO_KEY_COUNT; i++) {
+  for (int i = 0; i < TRACKED_NOTE_STATE_COUNT; i++) {
     currentNoteStates[i].isActive = false;
     currentNoteStates[i].originalTranspose = 0;
     currentNoteStates[i].channel = 0;
@@ -951,6 +991,7 @@ void setup() {
 
   Serial.println("MIDI Transposer Ready!");
   Serial.printf("Initial transpose: %d, Button 5 state: %s\n", transposeValue, transposeButtons[5] ? "ON" : "OFF");
+  Serial.println("USB serial command interface ready. Type HELP for commands.");
 }
 
 void loop() {
@@ -961,6 +1002,7 @@ void loop() {
 
   if (now - lastUICheck >= 20) {
     M5.update();
+    processUsbSerialCommands();
     processHardwareButtons();
     processTouch();
     processFootPedal();
@@ -1008,14 +1050,12 @@ void loop() {
       }
       if (!g_btBondSaved && (now - g_btConnectedSince) >= 3000) {
         g_btBondSaved = true;
-        Serial.println("[BT_BOND] 3s stable - saving bond to SD...");
-        if (saveBTBondToSD()) {
-          showBTOverlay("Bond Saved!", 0x03E0, 1500);
-        } else {
-          showBTOverlay("Bond Save Err", RED, 2000);
-        }
+        g_btBondSavePending = true;
+        Serial.println("[BT_BOND] 3s stable - bond save queued");
       }
     }
+
+    processDeferredStorageTasks(now);
 
     // オーバーレイ表示期限切れで画面再描画
     if (g_btOverlayUntil > 0 && now >= g_btOverlayUntil) {
@@ -1038,11 +1078,11 @@ void loop() {
 
 void initDirectModeButtons() {
   int buttonWidth = 75;
-  int buttonHeight = 52;
+  int buttonHeight = 60;
   int startX = 10;
-  int startY = 60;  // ステータス領域を広げたため下げる
+  int startY = 46;  // ヘッダ(y=0..40)直下から
   int spacingX = 5;
-  int spacingY = 8;
+  int spacingY = 4;
   int buttonsPerRow = 4;  // 4x3レイアウト
   
   for (int i = 0; i < 12; i++) {
@@ -1112,15 +1152,15 @@ void updateDirectButtonLabels() {
 
 void initKeyModeButtons() {
   const char* keyNames[] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
-  
+
   int whiteKeyWidth = 44;
   int blackKeyWidth = 28;
-  int whiteKeyHeight = 85;
-  int blackKeyHeight = 60;
+  int whiteKeyHeight = 78;
+  int blackKeyHeight = 52;
   int startX = 10;
-  
-  // メジャーキー（上段）
-  int majorY = 65;  // ステータス領域を広げたため下げる
+
+  // メジャーキー（上段）: ラベル y=44 直下、鍵盤 y=58
+  int majorY = 58;
   int whiteKeyIndex = 0;
   
   for (int i = 0; i < 12; i++) {
@@ -1142,8 +1182,8 @@ void initKeyModeButtons() {
     }
   }
   
-  // マイナーキー（下段）
-  int minorY = 160;  // ステータス領域を広げたため下げる
+  // マイナーキー（下段）: ラベル y=140、鍵盤 y=156、画面下端 y=234 まで
+  int minorY = 156;
   whiteKeyIndex = 0;
   
   for (int i = 0; i < 12; i++) {
@@ -1176,11 +1216,11 @@ void initInstantModeButtons() {
   static char labels[8][4];
 
   int buttonWidth = 75;
-  int buttonHeight = 52;
+  int buttonHeight = 58;
   int startX = 10;
-  int startY = 130;
+  int startY = 114;
   int spacingX = 5;
-  int spacingY = 5;
+  int spacingY = 6;
   int buttonsPerRow = 4;
 
   for (int i = 0; i < 8; i++) {
@@ -1200,9 +1240,9 @@ void initInstantModeButtons() {
 
   // 0 ボタン（ボタン2個分の幅、上段の上に中央配置）
   int zeroW = buttonWidth * 2 + spacingX;  // 155
-  int zeroH = 50;
+  int zeroH = 44;
   instantZeroBtn.x = (SCREEN_WIDTH - zeroW) / 2;
-  instantZeroBtn.y = startY - zeroH - 8;  // 上段の上、少し隙間
+  instantZeroBtn.y = startY - zeroH - 4;
   instantZeroBtn.w = zeroW;
   instantZeroBtn.h = zeroH;
 }
@@ -1215,12 +1255,13 @@ void initSequenceModeButtons() {
   int slotSpacing = 5;
   int startX = 5;
 
-  // レイアウト: パターン選択(h=34) → 上ボタン(h=30) → 値(h=32) → 下ボタン(h=30) → ステップ移動(h=30)
-  int patRowY = 52;   int patRowH = 34;
-  int upBtnY  = 90;   int upBtnH  = 30;
-  int slotY   = 122;  int slotH   = 32;
-  int downBtnY = 156;  int downBtnH = 30;
-  int navY    = 192;  int navH    = 32;
+  // レイアウト (ヘッダ y=0..40 の下から):
+  //   パターン選択(h=30) → 上ボタン(h=26) → 値(h=36) → 下ボタン(h=26) → ステップ移動(h=42)
+  int patRowY = 46;   int patRowH = 30;
+  int upBtnY  = 80;   int upBtnH  = 26;
+  int slotY   = 110;  int slotH   = 36;
+  int downBtnY = 150;  int downBtnH = 26;
+  int navY    = 182;  int navH    = 42;
 
   for (int i = 0; i < SEQ_STEP_COUNT; i++) {
     int x = startX + i * (slotWidth + slotSpacing);
@@ -1255,45 +1296,45 @@ void initSequenceModeButtons() {
 }
 
 void drawInterface() {
-  M5.Lcd.fillScreen(BLACK);
+  M5.Lcd.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, BLACK);
 
-  // タイトル表示（左上）
   uiFontSmall();
+
+  // ── Row 1 (y=2) : タイトル + 転調値 ──
   M5.Lcd.setTextColor(WHITE);
   uiDrawL(currentMode == MIDI_MANAGE_MODE ? "MIDI Manager" : "MIDI Transposer", 10, 2);
 
-  // ハードウェアボタンのガイド表示（1行目）
-  M5.Lcd.setTextColor(DARKGREY);
-  if (currentMode == MIDI_MANAGE_MODE) {
-    if (midiManagePage == MIDI_PAGE_FILTER) {
-      uiDrawL("A:AllOff  B:Type  C:Next  Hold:Group", 10, 22);
-    } else {
-      uiDrawL("A:AllOff  B:PG1/2  C:Next  Hold:Group", 10, 22);
-    }
-  } else {
-    uiDrawL("A:AllOff  B:Action  C:Next  Hold:Group", 10, 22);
-  }
-
-  // All Notes Off状態表示（2行目左）
+  // ── Row 2 (y=22) : AllOff | BT | I/O | ボタン補助 ──
   M5.Lcd.setTextColor(allNotesOffEnabled ? GREEN : RED);
   {
-    char buf[24];
-    snprintf(buf, sizeof(buf), "AllOff: %s", allNotesOffEnabled ? "ON" : "OFF");
-    uiDrawL(buf, 10, 42);
+    char buf[16];
+    snprintf(buf, sizeof(buf), "AllOff:%s", allNotesOffEnabled ? "ON " : "OFF");
+    uiDrawL(buf, 10, 22);
   }
-
-  // BT接続状態表示（2行目右）
   {
     BT_STATUS btSt = hid_l2cap_is_connected();
     uint16_t btColor;
     const char* btLabel;
-    if (btSt == BT_CONNECTED)    { btColor = GREEN;    btLabel = "BT:ON"; }
+    if (btSt == BT_CONNECTED)    { btColor = GREEN;  btLabel = "BT:ON"; }
     else if (btSt == BT_CONNECTING) { btColor = YELLOW; btLabel = "BT:.."; }
     else                            { btColor = RED;     btLabel = "BT:--"; }
     M5.Lcd.setTextColor(btColor);
-    uiDrawL(btLabel, 130, 42);
+    uiDrawL(btLabel, 96, 22);
   }
-  
+  M5.Lcd.setTextColor(DARKGREY);
+  {
+    const char* hint;
+    if (currentMode == MIDI_MANAGE_MODE) {
+      hint = (midiManagePage == MIDI_PAGE_FILTER) ? "B:Type  Hold:Grp" : "B:PG1/2  Hold:Grp";
+    } else {
+      hint = "B:Action  Hold:Grp";
+    }
+    uiDrawL(hint, 200, 22);
+  }
+
+  // ── ヘッダ下の区切り線 (y=40) ──
+  M5.Lcd.drawFastHLine(0, 40, SCREEN_WIDTH, DARKGREY);
+
   if (currentMode == DIRECT_MODE) {
     drawDirectMode();
   } else if (currentMode == KEY_MODE) {
@@ -1330,8 +1371,9 @@ void drawDirectMode() {
 void drawKeyMode() {
   uiFontSmall();
   M5.Lcd.setTextColor(CYAN);
-  uiDrawL(majorUpperTranspose ? "Major Keys (Upper +):" : "Major Keys (to C):", 10, 55);
-  uiDrawL(minorUpperTranspose ? "Minor Keys (Lower -):" : "Minor Keys (to Am):", 10, 150);
+  // ラベルは各鍵盤の直上 (鍵盤の y - 14) に置く
+  uiDrawL(majorUpperTranspose ? "Major Keys (Upper +):" : "Major Keys (to C):", 10, 44);
+  uiDrawL(minorUpperTranspose ? "Minor Keys (Lower -):" : "Minor Keys (to Am):", 10, 142);
   
   int correspondingMajorKey = -1;
   int correspondingMinorKey = -1;
@@ -1425,7 +1467,7 @@ void drawInstantMode() {
   // 説明
   uiFontSmall();
   M5.Lcd.setTextColor(CYAN);
-  uiDrawL("Instant Mode: tap to set value", 10, 55);
+  uiDrawL("Instant Mode: tap to set value", 10, 46);
 
   // 0 ボタン（上段の上、ボタン2個分幅）
   bool zeroActive = (transposeValue == 0);
@@ -1572,15 +1614,15 @@ void drawMidiActionButton(int x, int y, int w, int h, const char* label, uint16_
 }
 
 int midiManageVisibleRuleRows() { return 2; }
-int midiManageTopButtonY() { return 54; }
+int midiManageTopButtonY() { return 46; }
 int midiManageTopButtonH() { return 22; }
-int midiManageRuleRowY(int row) { return 82 + row * 24; }
+int midiManageRuleRowY(int row) { return 74 + row * 22; }
 int midiManageRuleRowH() { return 18; }
-int midiManageActionRowY(int row) { return 130 + row * 26; }
+int midiManageActionRowY(int row) { return 122 + row * 26; }
 int midiManageActionRowH() { return 22; }
 int midiManageActionGap() { return 6; }
-int midiManageEditFullRowY(int row) { return 184 + row * 26; }
-int midiManageEditGridRowY(int row) { return 180 + row * 21; }
+int midiManageEditFullRowY(int row) { return 178 + row * 26; }
+int midiManageEditGridRowY(int row) { return 174 + row * 21; }
 int midiManageEditRowH() { return 18; }
 
 void drawMidiInlineEditBox(const char* label, const char* value, int x, int y, int w, int h) {
@@ -1731,8 +1773,6 @@ void drawMidiManageMode() {
                         10, midiManageEditFullRowY(0), 300, 20);
     drawMidiInlineEditBox("Ch", getChannelLabel(midiFilterRules[midiSelectedFilterRule].channel, false),
                           10, midiManageEditFullRowY(1), 300, 20);
-    M5.Lcd.setTextColor(DARKGREY);
-    uiDrawL("Filter blocks matching messages before mapper.", 10, 236);
   } else {
     char pageLabel[8];
     snprintf(pageLabel, sizeof(pageLabel), "PG%d", midiMapperEditPage == MAPPER_PAGE_SOURCE ? 1 : 2);
@@ -1776,26 +1816,27 @@ void drawMidiManageMode() {
 }
 
 void updateStatusArea() {
-  // 右上のステータス表示エリア
-  M5.Lcd.fillRect(190, 0, 130, 40, BLACK);
+  // 右上の動的ステータスエリア (Row1 右側のみ)
+  // Row2 は AllOff/BT/Hint が居るので触らない
+  M5.Lcd.fillRect(155, 0, SCREEN_WIDTH - 155, 18, BLACK);
 
   uiFontSmall();
-  M5.Lcd.setTextColor(YELLOW);
 
   char buf[32];
   if (transposeValue > 0) {
-    snprintf(buf, sizeof(buf), "Transpose: +%d", transposeValue);
+    snprintf(buf, sizeof(buf), "Trans:+%d", transposeValue);
   } else if (transposeValue < 0) {
-    snprintf(buf, sizeof(buf), "Transpose: %d", transposeValue);
+    snprintf(buf, sizeof(buf), "Trans:%d", transposeValue);
   } else {
-    snprintf(buf, sizeof(buf), "Transpose: 0");
+    snprintf(buf, sizeof(buf), "Trans: 0");
   }
-  uiDrawL(buf, 195, 2);
+  M5.Lcd.setTextColor(YELLOW);
+  uiDrawL(buf, 240, 2);
 
-  // MIDI統計情報（2行目右）
+  // I/O カウンタは Row1 中央寄り
   M5.Lcd.setTextColor(DARKGREY);
   snprintf(buf, sizeof(buf), "I:%lu O:%lu", midiInCount, midiOutCount);
-  uiDrawL(buf, 195, 22);
+  uiDrawL(buf, 165, 2);
 }
 
 // フットスイッチによる転調値選択処理
@@ -1954,7 +1995,6 @@ void enterDisplayMode(int newMode) {
 
 void advanceDisplayMode() {
   sendAllNotesOff();
-  delay(10);
 
   if (currentMode == MIDI_MANAGE_MODE) {
     DisplayMode restoreMode = isTransposeDisplayMode(lastTransposeMode) ? lastTransposeMode : DIRECT_MODE;
@@ -1978,7 +2018,6 @@ void advanceSubMode() {
   }
 
   sendAllNotesOff();
-  delay(10);
 
   if (currentMode == DIRECT_MODE) enterDisplayMode(KEY_MODE);
   else if (currentMode == KEY_MODE) enterDisplayMode(INSTANT_MODE);
@@ -1993,7 +2032,7 @@ void processHardwareButtons() {
   unsigned long now = millis();
   if (M5.BtnC.isPressed()) {
     if (!btnCLongPressHandled && M5.BtnC.pressedFor(MODE_LONG_PRESS_MS)) {
-      advanceDisplayMode();
+      handleButtonCLongAction();
       btnCLongPressHandled = true;
       lastButtonCheck = now;
     }
@@ -2005,57 +2044,21 @@ void processHardwareButtons() {
 
   // 左ボタン（A）: All Notes Off切り替え
   if (M5.BtnA.wasPressed()) {
-    allNotesOffEnabled = !allNotesOffEnabled;
-    needFullRedraw = true;
+    handleButtonAAction();
     lastButtonCheck = now;
-    Serial.printf("All Notes Off: %s\n", allNotesOffEnabled ? "ON" : "OFF");
     return;
   }
 
   // 真ん中ボタン（B）
   if (M5.BtnB.wasPressed()) {
-    if (currentMode == DIRECT_MODE) {
-      // DirectMode: 3つのレンジを順次切り替え
-      if (transposeRange == RANGE_0_TO_12) {
-        transposeRange = RANGE_MINUS12_TO_0;
-      } else if (transposeRange == RANGE_MINUS12_TO_0) {
-        transposeRange = RANGE_MINUS5_TO_6;
-      } else {
-        transposeRange = RANGE_0_TO_12;
-      }
-      updateDirectButtonLabels();
-      setCurrentTransposeButton();  // 現在の転調値に対応するボタンを光らせる
-      needFullRedraw = true;
-    } else if (currentMode == KEY_MODE) {
-      // KeyMode: 上位/下位転調切り替え
-      majorUpperTranspose = !majorUpperTranspose;
-      minorUpperTranspose = !minorUpperTranspose;
-      selectedMajorKey = -1;
-      selectedMinorKey = -1;
-      needFullRedraw = true;
-    } else if (currentMode == MIDI_MANAGE_MODE) {
-      if (midiManagePage == MIDI_PAGE_FILTER) {
-        adjustWrappedMidiKind(midiFilterRules[midiSelectedFilterRule].kind, 1);
-        if (!midiKindHasChannel(midiFilterRules[midiSelectedFilterRule].kind)) {
-          midiFilterRules[midiSelectedFilterRule].channel = -1;
-        }
-        Serial.printf("Filter type: %s\n", getMidiKindLabel(midiFilterRules[midiSelectedFilterRule].kind));
-      } else {
-        midiMapperEditPage = (midiMapperEditPage == MAPPER_PAGE_SOURCE) ? MAPPER_PAGE_DEST : MAPPER_PAGE_SOURCE;
-        Serial.printf("Mapper edit page: PG%d\n", midiMapperEditPage == MAPPER_PAGE_SOURCE ? 1 : 2);
-      }
-      needFullRedraw = true;
-    } else {
-      // INSTANT_MODE, SEQUENCE_MODE: 何もしない
-    }
+    handleButtonBAction();
     lastButtonCheck = now;
-    Serial.println("Mode action (B)");
     return;
   }
 
   // 右ボタン（C）: モード切り替え（DIRECT→KEY→INSTANT→SEQUENCE→…）
   if (M5.BtnC.wasPressed() && !btnCLongPressHandled) {
-    advanceSubMode();
+    handleButtonCShortAction();
     lastButtonCheck = now;
   }
 
@@ -2116,21 +2119,67 @@ int getPianoKeyIndex(uint8_t midiNote) {
   return midiNote - PIANO_LOWEST_NOTE;
 }
 
+int getTrackedNoteStateIndex(uint8_t midiNote, uint8_t channel) {
+  int pianoKeyIndex = getPianoKeyIndex(midiNote);
+  if (pianoKeyIndex < 0 || channel >= MIDI_CHANNEL_COUNT) {
+    return -1;
+  }
+  return pianoKeyIndex * MIDI_CHANNEL_COUNT + channel;
+}
+
+void clearTrackedNoteStates(void) {
+  for (int i = 0; i < TRACKED_NOTE_STATE_COUNT; i++) {
+    currentNoteStates[i].isActive = false;
+    savedNoteStates[i].isActive = false;
+  }
+}
+
+bool isMidiInputIdle(unsigned long now) {
+  return Serial2.available() == 0 && (now - g_lastMidiInputAt) >= 250;
+}
+
+void processDeferredStorageTasks(unsigned long now) {
+  if (!isMidiInputIdle(now)) {
+    return;
+  }
+
+  if (g_btBondSavePending) {
+    g_btBondSavePending = false;
+    Serial.println("[BT_BOND] Idle window detected - saving bond to SD...");
+    if (saveBTBondToSD()) {
+      showBTOverlay("Bond Saved!", 0x03E0, 1500);
+    } else {
+      showBTOverlay("Bond Save Err", RED, 2000);
+    }
+    return;
+  }
+
+  if (g_seqSavePending) {
+    g_seqSavePending = false;
+    Serial.println("[SEQ] Idle window detected - saving sequence to SD...");
+    if (saveSequencesToSD()) {
+      showBTOverlay("SEQ Saved!", 0x03E0, 1200);
+    } else {
+      showBTOverlay("SEQ Save Err", RED, 1600);
+    }
+  }
+}
+
 // 転調値変更時の処理（スムーズな転調）
+// MIDI ホットパスを止めないよう、ここでは待ちを入れない。
 void handleTransposeChange(int8_t newTransposeValue) {
   newTransposeValue = clampTranspose(newTransposeValue);
   if (newTransposeValue == transposeValue) return; // 変更なし
   
   if (allNotesOffEnabled) {
     sendAllNotesOff();
-    delay(10);
     transposeValue = newTransposeValue;
     needPartialUpdate = true;
     return;
   }
   
   savedTranspose = transposeValue;
-  for (int i = 0; i < PIANO_KEY_COUNT; i++) {
+  for (int i = 0; i < TRACKED_NOTE_STATE_COUNT; i++) {
     savedNoteStates[i] = currentNoteStates[i];
   }
   
@@ -2156,17 +2205,7 @@ void processTouch() {
   touchWasActive = true;
 
   // ここから「押した瞬間」のみ処理
-  if (currentMode == DIRECT_MODE) {
-    processDirectModeTouch(pos);
-  } else if (currentMode == KEY_MODE) {
-    processKeyModeTouch(pos);
-  } else if (currentMode == INSTANT_MODE) {
-    processInstantModeTouch(pos);
-  } else if (currentMode == SEQUENCE_MODE) {
-    processSequenceModeTouch(pos);
-  } else {
-    processMidiManageTouch(pos);
-  }
+  dispatchTouchPoint(pos);
 }
 
 void processDirectModeTouch(TouchPoint_t pos) {
@@ -2293,28 +2332,8 @@ void processSequenceModeTouch(TouchPoint_t pos) {
   // SAVEボタン
   if (pos.x >= seqSaveBtn.x && pos.x <= seqSaveBtn.x + seqSaveBtn.w &&
       pos.y >= seqSaveBtn.y && pos.y <= seqSaveBtn.y + seqSaveBtn.h) {
-    if (saveSequencesToSD()) {
-      // 保存成功フィードバック：ボタンを緑に一瞬表示
-      M5.Lcd.fillRect(seqSaveBtn.x, seqSaveBtn.y,
-                      seqSaveBtn.w, seqSaveBtn.h, GREEN);
-      M5.Lcd.drawRect(seqSaveBtn.x, seqSaveBtn.y,
-                      seqSaveBtn.w, seqSaveBtn.h, WHITE);
-      uiFontMedium();
-      M5.Lcd.setTextColor(BLACK);
-      uiDrawC("OK!", seqSaveBtn.x, seqSaveBtn.y, seqSaveBtn.w, seqSaveBtn.h);
-      delay(500);
-    } else {
-      // 保存失敗フィードバック
-      M5.Lcd.fillRect(seqSaveBtn.x, seqSaveBtn.y,
-                      seqSaveBtn.w, seqSaveBtn.h, ORANGE);
-      M5.Lcd.drawRect(seqSaveBtn.x, seqSaveBtn.y,
-                      seqSaveBtn.w, seqSaveBtn.h, WHITE);
-      uiFontMedium();
-      M5.Lcd.setTextColor(BLACK);
-      uiDrawC("ERR!", seqSaveBtn.x, seqSaveBtn.y, seqSaveBtn.w, seqSaveBtn.h);
-      delay(500);
-    }
-    needFullRedraw = true;
+    g_seqSavePending = true;
+    showBTOverlay("SEQ Save Q", BLUE, 800);
     return;
   }
 
@@ -2580,6 +2599,434 @@ void processMidiManageTouch(TouchPoint_t pos) {
   }
 }
 
+const char* getDisplayModeLabel(DisplayMode mode) {
+  switch (mode) {
+    case DIRECT_MODE: return "DIRECT";
+    case KEY_MODE: return "KEY";
+    case INSTANT_MODE: return "INSTANT";
+    case SEQUENCE_MODE: return "SEQUENCE";
+    case MIDI_MANAGE_MODE: return "MIDI_MANAGER";
+    default: return "UNKNOWN";
+  }
+}
+
+const char* getBtStatusLabel(BT_STATUS status) {
+  switch (status) {
+    case BT_UNINITIALIZED: return "UNINITIALIZED";
+    case BT_DISCONNECTED: return "DISCONNECTED";
+    case BT_CONNECTING: return "CONNECTING";
+    case BT_CONNECTED: return "CONNECTED";
+    default: return "UNKNOWN";
+  }
+}
+
+bool isUsbBinaryTransferActive(void) {
+  return g_usbBinaryTransferActive;
+}
+
+bool tokenEqualsIgnoreCase(const char* lhs, const char* rhs) {
+  if (lhs == nullptr || rhs == nullptr) return false;
+  while (*lhs != '\0' && *rhs != '\0') {
+    if (toupper((unsigned char)*lhs) != toupper((unsigned char)*rhs)) return false;
+    lhs++;
+    rhs++;
+  }
+  return *lhs == '\0' && *rhs == '\0';
+}
+
+bool parseIntValue(const char* token, int& outValue) {
+  if (token == nullptr || *token == '\0') return false;
+  char* endPtr = nullptr;
+  long value = strtol(token, &endPtr, 10);
+  if (endPtr == token || *endPtr != '\0') return false;
+  outValue = (int)value;
+  return true;
+}
+
+void handleButtonAAction() {
+  allNotesOffEnabled = !allNotesOffEnabled;
+  needFullRedraw = true;
+  Serial.printf("All Notes Off: %s\n", allNotesOffEnabled ? "ON" : "OFF");
+}
+
+void handleButtonBAction() {
+  if (currentMode == DIRECT_MODE) {
+    if (transposeRange == RANGE_0_TO_12) {
+      transposeRange = RANGE_MINUS12_TO_0;
+    } else if (transposeRange == RANGE_MINUS12_TO_0) {
+      transposeRange = RANGE_MINUS5_TO_6;
+    } else {
+      transposeRange = RANGE_0_TO_12;
+    }
+    updateDirectButtonLabels();
+    setCurrentTransposeButton();
+    needFullRedraw = true;
+  } else if (currentMode == KEY_MODE) {
+    majorUpperTranspose = !majorUpperTranspose;
+    minorUpperTranspose = !minorUpperTranspose;
+    selectedMajorKey = -1;
+    selectedMinorKey = -1;
+    needFullRedraw = true;
+  } else if (currentMode == MIDI_MANAGE_MODE) {
+    if (midiManagePage == MIDI_PAGE_FILTER) {
+      adjustWrappedMidiKind(midiFilterRules[midiSelectedFilterRule].kind, 1);
+      if (!midiKindHasChannel(midiFilterRules[midiSelectedFilterRule].kind)) {
+        midiFilterRules[midiSelectedFilterRule].channel = -1;
+      }
+      Serial.printf("Filter type: %s\n", getMidiKindLabel(midiFilterRules[midiSelectedFilterRule].kind));
+    } else {
+      midiMapperEditPage = (midiMapperEditPage == MAPPER_PAGE_SOURCE) ? MAPPER_PAGE_DEST : MAPPER_PAGE_SOURCE;
+      Serial.printf("Mapper edit page: PG%d\n", midiMapperEditPage == MAPPER_PAGE_SOURCE ? 1 : 2);
+    }
+    needFullRedraw = true;
+  }
+
+  Serial.println("Mode action (B)");
+}
+
+void handleButtonCShortAction() {
+  advanceSubMode();
+}
+
+void handleButtonCLongAction() {
+  advanceDisplayMode();
+}
+
+void dispatchTouchPoint(TouchPoint_t pos) {
+  if (currentMode == DIRECT_MODE) {
+    processDirectModeTouch(pos);
+  } else if (currentMode == KEY_MODE) {
+    processKeyModeTouch(pos);
+  } else if (currentMode == INSTANT_MODE) {
+    processInstantModeTouch(pos);
+  } else if (currentMode == SEQUENCE_MODE) {
+    processSequenceModeTouch(pos);
+  } else {
+    processMidiManageTouch(pos);
+  }
+}
+
+void injectTouchPoint(int16_t x, int16_t y) {
+  TouchPoint_t pos;
+  pos.x = x;
+  pos.y = y;
+  dispatchTouchPoint(pos);
+}
+
+bool setGroupFromCommand(const char* groupName) {
+  if (tokenEqualsIgnoreCase(groupName, "TRANSPOSE")) {
+    DisplayMode restoreMode = isTransposeDisplayMode(lastTransposeMode) ? lastTransposeMode : DIRECT_MODE;
+    enterDisplayMode(restoreMode);
+    return true;
+  }
+  if (tokenEqualsIgnoreCase(groupName, "MIDI") ||
+      tokenEqualsIgnoreCase(groupName, "MANAGER") ||
+      tokenEqualsIgnoreCase(groupName, "MIDI_MANAGER")) {
+    enterDisplayMode(MIDI_MANAGE_MODE);
+    return true;
+  }
+  return false;
+}
+
+bool setModeFromCommand(const char* modeName) {
+  if (tokenEqualsIgnoreCase(modeName, "DIRECT")) {
+    enterDisplayMode(DIRECT_MODE);
+    return true;
+  }
+  if (tokenEqualsIgnoreCase(modeName, "KEY")) {
+    enterDisplayMode(KEY_MODE);
+    return true;
+  }
+  if (tokenEqualsIgnoreCase(modeName, "INSTANT")) {
+    enterDisplayMode(INSTANT_MODE);
+    return true;
+  }
+  if (tokenEqualsIgnoreCase(modeName, "SEQUENCE") || tokenEqualsIgnoreCase(modeName, "SEQ")) {
+    enterDisplayMode(SEQUENCE_MODE);
+    return true;
+  }
+  if (tokenEqualsIgnoreCase(modeName, "FILTER")) {
+    enterDisplayMode(MIDI_MANAGE_MODE);
+    midiManagePage = MIDI_PAGE_FILTER;
+    needFullRedraw = true;
+    return true;
+  }
+  if (tokenEqualsIgnoreCase(modeName, "MAPPER")) {
+    enterDisplayMode(MIDI_MANAGE_MODE);
+    midiManagePage = MIDI_PAGE_MAPPER;
+    needFullRedraw = true;
+    return true;
+  }
+  if (tokenEqualsIgnoreCase(modeName, "MIDI") ||
+      tokenEqualsIgnoreCase(modeName, "MANAGER") ||
+      tokenEqualsIgnoreCase(modeName, "MIDI_MANAGER")) {
+    enterDisplayMode(MIDI_MANAGE_MODE);
+    return true;
+  }
+  return false;
+}
+
+void printUsbSerialStatus() {
+  const char* pageLabel = (midiManagePage == MIDI_PAGE_FILTER) ? "FILTER" : "MAPPER";
+  const char* mapperPageLabel = (midiMapperEditPage == MAPPER_PAGE_SOURCE) ? "PG1" : "PG2";
+  const char* btLabel = getBtStatusLabel(hid_l2cap_is_connected());
+  Serial.printf(
+    "OK STATUS mode=%s group=%s transpose=%d range=%d filter_bypass=%d mapper_bypass=%d "
+    "filter_rule=%d/%d mapper_rule=%d/%d page=%s mapper_page=%s midi_in=%lu midi_out=%lu bt=%s\n",
+    getDisplayModeLabel(currentMode),
+    (currentMode == MIDI_MANAGE_MODE) ? "MIDI" : "TRANSPOSE",
+    transposeValue,
+    (int)transposeRange,
+    midiFilterBypass ? 1 : 0,
+    midiMapperBypass ? 1 : 0,
+    midiSelectedFilterRule + 1, midiFilterRuleCount,
+    midiSelectedMapperRule + 1, midiMapperRuleCount,
+    pageLabel,
+    mapperPageLabel,
+    midiInCount,
+    midiOutCount,
+    btLabel
+  );
+}
+
+void printUsbSerialHelp() {
+  Serial.println("OK HELP BEGIN");
+  Serial.println("HELP");
+  Serial.println("STATUS");
+  Serial.println("REDRAW");
+  Serial.println("BUTTON A|B|C [LONG]");
+  Serial.println("TOUCH <x> <y>");
+  Serial.println("MODE DIRECT|KEY|INSTANT|SEQUENCE|FILTER|MAPPER|MIDI");
+  Serial.println("GROUP TRANSPOSE|MIDI");
+  Serial.println("SET TRANSPOSE <-11..11>");
+  Serial.println("SCREENSHOT [PPM|RGB888]");
+  Serial.println("INFO SCREEN");
+  Serial.println("OK HELP END");
+}
+
+void sendUsbSerialScreenshot(const char* formatToken) {
+  bool asPpm = (formatToken == nullptr || tokenEqualsIgnoreCase(formatToken, "PPM"));
+  bool asRgb888 = tokenEqualsIgnoreCase(formatToken, "RGB888");
+
+  if (!asPpm && !asRgb888) {
+    Serial.println("ERR SCREENSHOT format must be PPM or RGB888");
+    return;
+  }
+
+  // LCD に直接描画したものを GRAM から読み戻す。
+  // PSRAM スプライトは使わない (公式 M5Stack screenServer.ino と同方針)。
+  needFullRedraw = false;
+  needPartialUpdate = false;
+  drawInterface();
+  delay(150);
+
+  const size_t totalBytes = (size_t)SCREEN_WIDTH * SCREEN_HEIGHT * 3;
+
+  char header[32];
+  size_t headerBytes = 0;
+  size_t payloadBytes = totalBytes;
+  g_usbBinaryTransferActive = true;
+  if (asPpm) {
+    headerBytes = (size_t)snprintf(header, sizeof(header), "P6\n%d %d\n255\n", SCREEN_WIDTH, SCREEN_HEIGHT);
+    payloadBytes += headerBytes;
+    Serial.printf("OK SCREENSHOT format=PPM width=%d height=%d bytes=%u\n",
+                  SCREEN_WIDTH, SCREEN_HEIGHT, (unsigned int)payloadBytes);
+    Serial.write((const uint8_t*)header, headerBytes);
+  } else {
+    Serial.printf("OK SCREENSHOT format=RGB888 width=%d height=%d bytes=%u\n",
+                  SCREEN_WIDTH, SCREEN_HEIGHT, (unsigned int)payloadBytes);
+  }
+  Serial.flush();
+
+  // ★最終手段★ 1 ピクセルずつ readPixel で取得する。
+  // 各 readPixel は単独で setAddrWindow → READRAM を走らせるので、
+  // どんな位置でも横方向 / 縦方向のドリフトが累積しない。
+  // 速度は遅い (~10 秒) が、確実にクリーンに取れる。
+  static uint8_t rowBuffer[SCREEN_WIDTH * 3];
+  for (int y = 0; y < SCREEN_HEIGHT; y++) {
+    uint8_t* dst = rowBuffer;
+    for (int x = 0; x < SCREEN_WIDTH; x++) {
+      uint16_t c = M5.Lcd.readPixel(x, y);  // RGB565
+      uint8_t r5 = (c >> 11) & 0x1F;
+      uint8_t g6 = (c >> 5)  & 0x3F;
+      uint8_t b5 = c & 0x1F;
+      *dst++ = (uint8_t)((r5 << 3) | (r5 >> 2));
+      *dst++ = (uint8_t)((g6 << 2) | (g6 >> 4));
+      *dst++ = (uint8_t)((b5 << 3) | (b5 >> 2));
+    }
+    Serial.write(rowBuffer, sizeof(rowBuffer));
+  }
+
+  Serial.flush();
+  g_usbBinaryTransferActive = false;
+  Serial.println();
+  Serial.println("OK SCREENSHOT_DONE");
+}
+
+void handleUsbSerialCommand(char* line) {
+  while (*line != '\0' && isspace((unsigned char)*line)) line++;
+  if (*line == '\0') return;
+
+  char* end = line + strlen(line) - 1;
+  while (end >= line && isspace((unsigned char)*end)) {
+    *end = '\0';
+    end--;
+  }
+  if (*line == '\0') return;
+
+  char* savePtr = nullptr;
+  char* command = strtok_r(line, " \t", &savePtr);
+  if (command == nullptr) return;
+
+  if (tokenEqualsIgnoreCase(command, "HELP")) {
+    printUsbSerialHelp();
+    return;
+  }
+
+  if (tokenEqualsIgnoreCase(command, "STATUS")) {
+    printUsbSerialStatus();
+    return;
+  }
+
+  if (tokenEqualsIgnoreCase(command, "REDRAW")) {
+    needFullRedraw = true;
+    Serial.println("OK REDRAW");
+    return;
+  }
+
+  if (tokenEqualsIgnoreCase(command, "INFO")) {
+    char* subject = strtok_r(nullptr, " \t", &savePtr);
+    if (subject != nullptr && tokenEqualsIgnoreCase(subject, "SCREEN")) {
+      Serial.printf("OK SCREEN width=%d height=%d\n", SCREEN_WIDTH, SCREEN_HEIGHT);
+      return;
+    }
+    Serial.println("ERR INFO requires SCREEN");
+    return;
+  }
+
+  if (tokenEqualsIgnoreCase(command, "BUTTON")) {
+    char* button = strtok_r(nullptr, " \t", &savePtr);
+    char* modifier = strtok_r(nullptr, " \t", &savePtr);
+    if (button == nullptr) {
+      Serial.println("ERR BUTTON requires A, B, or C");
+      return;
+    }
+
+    if (tokenEqualsIgnoreCase(button, "A")) {
+      handleButtonAAction();
+      Serial.println("OK BUTTON A");
+      return;
+    }
+    if (tokenEqualsIgnoreCase(button, "B")) {
+      handleButtonBAction();
+      Serial.println("OK BUTTON B");
+      return;
+    }
+    if (tokenEqualsIgnoreCase(button, "C")) {
+      if (modifier != nullptr && tokenEqualsIgnoreCase(modifier, "LONG")) {
+        handleButtonCLongAction();
+        Serial.println("OK BUTTON C LONG");
+      } else {
+        handleButtonCShortAction();
+        Serial.println("OK BUTTON C");
+      }
+      return;
+    }
+
+    Serial.println("ERR BUTTON requires A, B, or C");
+    return;
+  }
+
+  if (tokenEqualsIgnoreCase(command, "TOUCH")) {
+    char* xToken = strtok_r(nullptr, " \t", &savePtr);
+    char* yToken = strtok_r(nullptr, " \t", &savePtr);
+    int x = 0;
+    int y = 0;
+    if (!parseIntValue(xToken, x) || !parseIntValue(yToken, y)) {
+      Serial.println("ERR TOUCH requires integer x and y");
+      return;
+    }
+    if (x < 0 || x >= SCREEN_WIDTH || y < 0 || y >= SCREEN_HEIGHT) {
+      Serial.println("ERR TOUCH out of range");
+      return;
+    }
+    injectTouchPoint((int16_t)x, (int16_t)y);
+    Serial.printf("OK TOUCH %d %d\n", x, y);
+    return;
+  }
+
+  if (tokenEqualsIgnoreCase(command, "MODE")) {
+    char* modeName = strtok_r(nullptr, " \t", &savePtr);
+    if (modeName == nullptr) {
+      Serial.println("ERR MODE requires a target mode");
+      return;
+    }
+    if (!setModeFromCommand(modeName)) {
+      Serial.println("ERR MODE unknown target");
+      return;
+    }
+    Serial.printf("OK MODE %s\n", modeName);
+    return;
+  }
+
+  if (tokenEqualsIgnoreCase(command, "GROUP")) {
+    char* groupName = strtok_r(nullptr, " \t", &savePtr);
+    if (groupName == nullptr) {
+      Serial.println("ERR GROUP requires TRANSPOSE or MIDI");
+      return;
+    }
+    if (!setGroupFromCommand(groupName)) {
+      Serial.println("ERR GROUP unknown target");
+      return;
+    }
+    Serial.printf("OK GROUP %s\n", groupName);
+    return;
+  }
+
+  if (tokenEqualsIgnoreCase(command, "SET")) {
+    char* target = strtok_r(nullptr, " \t", &savePtr);
+    if (target != nullptr && tokenEqualsIgnoreCase(target, "TRANSPOSE")) {
+      char* valueToken = strtok_r(nullptr, " \t", &savePtr);
+      int newValue = 0;
+      if (!parseIntValue(valueToken, newValue)) {
+        Serial.println("ERR SET TRANSPOSE requires an integer");
+        return;
+      }
+      handleTransposeChange(clampTranspose((int8_t)newValue));
+      if (currentMode == DIRECT_MODE) setCurrentTransposeButton();
+      needFullRedraw = true;
+      Serial.printf("OK SET TRANSPOSE %d\n", transposeValue);
+      return;
+    }
+    Serial.println("ERR SET supports only TRANSPOSE");
+    return;
+  }
+
+  if (tokenEqualsIgnoreCase(command, "SCREENSHOT")) {
+    char* format = strtok_r(nullptr, " \t", &savePtr);
+    sendUsbSerialScreenshot(format);
+    return;
+  }
+
+  Serial.println("ERR Unknown command");
+}
+
+void processUsbSerialCommands() {
+  while (Serial.available() > 0) {
+    char incoming = (char)Serial.read();
+    if (incoming == '\r') continue;
+    if (incoming == '\n') {
+      usbCommandBuffer[usbCommandLength] = '\0';
+      handleUsbSerialCommand(usbCommandBuffer);
+      usbCommandLength = 0;
+      continue;
+    }
+    if (usbCommandLength < (USB_COMMAND_BUFFER_SIZE - 1)) {
+      usbCommandBuffer[usbCommandLength++] = incoming;
+    }
+  }
+}
+
 void sendAllNotesOff() {
   for (int channel = 0; channel < 16; channel++) {
     Serial2.write(0xB0 | channel);
@@ -2592,20 +3039,22 @@ void sendAllNotesOff() {
     
     midiOutCount += 6;
   }
-  
-  for (int i = 0; i < PIANO_KEY_COUNT; i++) {
-    currentNoteStates[i].isActive = false;
-    savedNoteStates[i].isActive = false;
-  }
+
+  clearTrackedNoteStates();
   
   Serial.println("All Notes Off sent");
 }
 
 void processMIDI() {
+  bool sawInput = false;
   while (Serial2.available()) {
     uint8_t incomingByte = Serial2.read();
+    sawInput = true;
     midiInCount++;
     processMIDIByte(incomingByte);
+  }
+  if (sawInput) {
+    g_lastMidiInputAt = millis();
   }
 }
 
@@ -2739,7 +3188,7 @@ void sendMIDIMessage(uint8_t* buffer, int length) {
     uint8_t velocity = buffer[2];
     
     bool isNoteOn = (messageType == 0x90) && (velocity > 0);
-    int pianoKeyIndex = getPianoKeyIndex(note);
+    int noteStateIndex = getTrackedNoteStateIndex(note, channel);
     
     if (isNoteOn) {
       int16_t transposedNote = note + transposeValue;
@@ -2749,24 +3198,24 @@ void sendMIDIMessage(uint8_t* buffer, int length) {
         Serial2.write(velocity);
         midiOutCount += 3;
         
-        if (pianoKeyIndex >= 0) {
-          currentNoteStates[pianoKeyIndex].isActive = true;
-          currentNoteStates[pianoKeyIndex].originalTranspose = transposeValue;
-          currentNoteStates[pianoKeyIndex].channel = channel;
-          currentNoteStates[pianoKeyIndex].velocity = velocity;
+        if (noteStateIndex >= 0) {
+          currentNoteStates[noteStateIndex].isActive = true;
+          currentNoteStates[noteStateIndex].originalTranspose = transposeValue;
+          currentNoteStates[noteStateIndex].channel = channel;
+          currentNoteStates[noteStateIndex].velocity = velocity;
         }
       }
     } else {
       int16_t transposedNote;
       bool shouldSendNoteOff = true;
       
-      if (pianoKeyIndex >= 0) {
-        if (currentNoteStates[pianoKeyIndex].isActive) {
-          transposedNote = note + currentNoteStates[pianoKeyIndex].originalTranspose;
-          currentNoteStates[pianoKeyIndex].isActive = false;
-        } else if (savedNoteStates[pianoKeyIndex].isActive) {
-          transposedNote = note + savedNoteStates[pianoKeyIndex].originalTranspose;
-          savedNoteStates[pianoKeyIndex].isActive = false;
+      if (noteStateIndex >= 0) {
+        if (currentNoteStates[noteStateIndex].isActive) {
+          transposedNote = note + currentNoteStates[noteStateIndex].originalTranspose;
+          currentNoteStates[noteStateIndex].isActive = false;
+        } else if (savedNoteStates[noteStateIndex].isActive) {
+          transposedNote = note + savedNoteStates[noteStateIndex].originalTranspose;
+          savedNoteStates[noteStateIndex].isActive = false;
         } else {
           transposedNote = note + transposeValue;
         }

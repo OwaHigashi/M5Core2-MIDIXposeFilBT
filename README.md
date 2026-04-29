@@ -246,3 +246,70 @@ MIDI メッセージの再割り当て/変換を行います。
 arduino-cli compile --fqbn m5stack:esp32:m5stack_core2 D:\M5\M5Core2-MIDIXposeFilBT
 arduino-cli upload -p COM4 --fqbn m5stack:esp32:m5stack_core2 D:\M5\M5Core2-MIDIXposeFilBT
 ```
+
+## USB シリアルコマンド
+
+PC から USB シリアルで本体を操作できます。
+シリアル速度は `115200bps`、改行は `LF` または `CRLF` です。
+
+起動後に `HELP` を送ると、利用できるコマンド一覧を返します。
+
+### 主なコマンド
+
+- `HELP`
+- `STATUS`
+- `REDRAW`
+- `BUTTON A`
+- `BUTTON B`
+- `BUTTON C`
+- `BUTTON C LONG`
+- `TOUCH x y`
+- `MODE DIRECT`
+- `MODE KEY`
+- `MODE INSTANT`
+- `MODE SEQUENCE`
+- `MODE FILTER`
+- `MODE MAPPER`
+- `GROUP TRANSPOSE`
+- `GROUP MIDI`
+- `SET TRANSPOSE n`
+- `INFO SCREEN`
+- `SCREENSHOT PPM`
+- `SCREENSHOT RGB888`
+
+### 使い方の考え方
+
+- `BUTTON` は本体の A/B/C ボタン操作を外部から再現します。
+- `TOUCH x y` は画面の指定座標をタップしたのと同じ扱いです。
+- `MODE` と `GROUP` は、目的の画面へ直接切り替えたいときに使います。
+- `STATUS` は現在モード、転調値、FILTER/MAPPER の状態、MIDI 入出力カウントなどを 1 行で返します。
+
+## スクリーンキャプチャ
+
+画面のスクリーンショットは USB シリアル経由で取得できます。
+
+### `SCREENSHOT PPM`
+
+初心者向けのマニュアル作成や静止画保存に向く形式です。
+コマンド送信後、最初に次のようなヘッダ行が返ります。
+
+```text
+OK SCREENSHOT format=PPM width=320 height=240 bytes=230415
+```
+
+その直後に、バイナリの `PPM(P6)` データ本体が流れます。
+指定バイト数を読み切ると、最後に `OK SCREENSHOT_DONE` が返ります。
+
+### `SCREENSHOT RGB888`
+
+PC 側 GUI で直接扱いやすい、生の `RGB888` バイト列です。
+返し方は `PPM` と同じで、先頭ヘッダだけが `format=RGB888` になります。
+
+### 利用イメージ
+
+1. `INFO SCREEN` で画面サイズを取得
+2. `SCREENSHOT PPM` で現在画面を保存
+3. 必要に応じて `TOUCH x y` や `BUTTON ...` で画面を操作
+4. 再度 `SCREENSHOT ...` を取得
+
+この仕組みにより、後で PC 側から大画面 UI を作るときに、本体画面を見ながら既存 UI をそのまま遠隔操作できます。

@@ -10,6 +10,11 @@ extern "C"{
 }
 #include "hid_l2cap.h"
 
+extern bool isUsbBinaryTransferActive(void);
+
+#define HID_LOGF(...) do { if (!isUsbBinaryTransferActive()) Serial.printf(__VA_ARGS__); } while (0)
+#define HID_LOGLN(msg) do { if (!isUsbBinaryTransferActive()) Serial.println(msg); } while (0)
+
 #define HID_L2CAP_ID_HIDC 0x40
 #define HID_L2CAP_ID_HIDI 0x41
 
@@ -34,18 +39,18 @@ static void bt_gap_cb(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
 {
   switch (event) {
     case ESP_BT_GAP_AUTH_CMPL_EVT:
-      Serial.printf("[BT_GAP] AUTH_CMPL: stat=%d, name=%s\n",
-                    param->auth_cmpl.stat, param->auth_cmpl.device_name);
+      HID_LOGF("[BT_GAP] AUTH_CMPL: stat=%d, name=%s\n",
+               param->auth_cmpl.stat, param->auth_cmpl.device_name);
       if (param->auth_cmpl.stat == ESP_BT_STATUS_SUCCESS) {
         g_auth_completed = true;
-        Serial.println("[BT_GAP] Authentication successful - bond info should be in NVS");
+        HID_LOGLN("[BT_GAP] Authentication successful - bond info should be in NVS");
       } else {
-        Serial.println("[BT_GAP] Authentication failed");
+        HID_LOGLN("[BT_GAP] Authentication failed");
       }
       break;
 
     case ESP_BT_GAP_PIN_REQ_EVT:
-      Serial.println("[BT_GAP] PIN_REQ - replying with 0000");
+      HID_LOGLN("[BT_GAP] PIN_REQ - replying with 0000");
       {
         esp_bt_pin_code_t pin = {'0', '0', '0', '0'};
         esp_bt_gap_pin_reply(param->pin_req.bda, true, 4, pin);
@@ -53,25 +58,25 @@ static void bt_gap_cb(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
       break;
 
     case ESP_BT_GAP_CFM_REQ_EVT:
-      Serial.printf("[BT_GAP] CFM_REQ: num_val=%d - auto confirming\n",
-                    param->cfm_req.num_val);
+      HID_LOGF("[BT_GAP] CFM_REQ: num_val=%d - auto confirming\n",
+               param->cfm_req.num_val);
       esp_bt_gap_ssp_confirm_reply(param->cfm_req.bda, true);
       break;
 
     case ESP_BT_GAP_KEY_NOTIF_EVT:
-      Serial.printf("[BT_GAP] KEY_NOTIF: passkey=%d\n", param->key_notif.passkey);
+      HID_LOGF("[BT_GAP] KEY_NOTIF: passkey=%d\n", param->key_notif.passkey);
       break;
 
     case ESP_BT_GAP_KEY_REQ_EVT:
-      Serial.println("[BT_GAP] KEY_REQ");
+      HID_LOGLN("[BT_GAP] KEY_REQ");
       break;
 
     case ESP_BT_GAP_MODE_CHG_EVT:
-      Serial.printf("[BT_GAP] MODE_CHG: mode=%d\n", param->mode_chg.mode);
+      HID_LOGF("[BT_GAP] MODE_CHG: mode=%d\n", param->mode_chg.mode);
       break;
 
     default:
-      Serial.printf("[BT_GAP] event=%d\n", event);
+      HID_LOGF("[BT_GAP] event=%d\n", event);
       break;
   }
 }
@@ -111,17 +116,17 @@ static long hid_l2cap_init_service( const char *name, uint16_t psm, uint8_t secu
 {
     /* Register the PSM for incoming connections */
     if (!L2CA_Register(psm, (tL2CAP_APPL_INFO *) &dyn_info)) {
-        Serial.printf("%s Registering service %s failed\n", __func__, name);
+        HID_LOGF("%s Registering service %s failed\n", __func__, name);
         return -1;
     }
 
     /* Register with the Security Manager for our specific security level (none) */
     if (!BTM_SetSecurityLevel (false, name, security_id, 0, psm, 0, 0)) {
-        Serial.printf("%s Registering security service %s failed\n", __func__, name );
+        HID_LOGF("%s Registering security service %s failed\n", __func__, name );
         return -1;
     }
 
-    Serial.printf("[%s] Service %s Initialized\n", __func__, name);
+    HID_LOGF("[%s] Service %s Initialized\n", __func__, name);
 
     return 0;
 }
@@ -144,7 +149,7 @@ long hid_l2cap_reconnect(void)
 {
   long ret;
   ret = L2CA_CONNECT_REQ(BT_PSM_HIDC, g_bd_addr, NULL, NULL);
-  Serial.printf("L2CA_CONNECT_REQ ret=%ld\\n", static_cast<long>(ret));
+  HID_LOGF("L2CA_CONNECT_REQ ret=%ld\\n", static_cast<long>(ret));
   if( ret == 0 ){
     return -1;
   }
@@ -166,28 +171,28 @@ long hid_l2cap_connect(BD_ADDR addr)
 long hid_l2cap_initialize(HID_L2CAP_CALLBACK callback)
 {
   if(!btStarted() && !btStart()){
-    Serial.println("btStart failed");
+    HID_LOGLN("btStart failed");
     return -1;
   }
 
   esp_bluedroid_status_t bt_state = esp_bluedroid_get_status();
   if(bt_state == ESP_BLUEDROID_STATUS_UNINITIALIZED){
       if (esp_bluedroid_init()) {
-        Serial.println("esp_bluedroid_init failed");
+        HID_LOGLN("esp_bluedroid_init failed");
         return -1;
       }
   }
 
   if(bt_state != ESP_BLUEDROID_STATUS_ENABLED){
       if (esp_bluedroid_enable()) {
-        Serial.println("esp_bluedroid_enable failed");
+        HID_LOGLN("esp_bluedroid_enable failed");
         return -1;
       }
   }
 
   // Register GAP callback for SSP (Secure Simple Pairing) handling
   if (esp_bt_gap_register_callback(bt_gap_cb) != ESP_OK) {
-    Serial.println("esp_bt_gap_register_callback failed");
+    HID_LOGLN("esp_bt_gap_register_callback failed");
     return -1;
   }
 
@@ -199,10 +204,10 @@ long hid_l2cap_initialize(HID_L2CAP_CALLBACK callback)
   esp_bt_pin_code_t pin_code = {'0', '0', '0', '0'};
   esp_bt_gap_set_pin(ESP_BT_PIN_TYPE_FIXED, 4, pin_code);
 
-  Serial.println("[BT] GAP callback registered, SSP configured");
+  HID_LOGLN("[BT] GAP callback registered, SSP configured");
 
   if( hid_l2cap_init_services() != 0 ){
-    Serial.println("hid_l2cap_init_services failed");
+    HID_LOGLN("hid_l2cap_init_services failed");
     return -1;
   }
 
@@ -215,30 +220,30 @@ long hid_l2cap_initialize(HID_L2CAP_CALLBACK callback)
 
 static void hid_l2cap_connect_cfm_cback(uint16_t l2cap_cid, uint16_t result)
 {
-  Serial.printf("[%s] l2cap_cid: 0x%02x\n  result: %d\n", __func__, l2cap_cid, result );
+  HID_LOGF("[%s] l2cap_cid: 0x%02x\n  result: %d\n", __func__, l2cap_cid, result );
 }
 
 static void hid_l2cap_config_cfm_cback(uint16_t l2cap_cid, tL2CAP_CFG_INFO *p_cfg)
 {
-  Serial.printf("[%s] l2cap_cid: 0x%02x\n  p_cfg->result: %d\n", __func__, l2cap_cid, p_cfg->result );
+  HID_LOGF("[%s] l2cap_cid: 0x%02x\n  p_cfg->result: %d\n", __func__, l2cap_cid, p_cfg->result );
     
   if( l2cap_cid == l2cap_cid_hidc ){
     long ret;
     ret = L2CA_CONNECT_REQ(BT_PSM_HIDI, g_bd_addr, NULL, NULL);
-    Serial.printf("L2CA_CONNECT_REQ ret=%ld\\n", static_cast<long>(ret));
+    HID_LOGF("L2CA_CONNECT_REQ ret=%ld\\n", static_cast<long>(ret));
     if( ret == 0 )
       return;
     l2cap_cid_hidi = ret;
   }else if( l2cap_cid == l2cap_cid_hidi ){
     is_connected = BT_CONNECTED;
 
-    Serial.println("Hid Connected");
+    HID_LOGLN("Hid Connected");
   }
 }
 
 static void hid_l2cap_config_ind_cback(uint16_t l2cap_cid, tL2CAP_CFG_INFO *p_cfg)
 {
-    Serial.printf("[%s] l2cap_cid: 0x%02x\n  p_cfg->result: %d\n  p_cfg->mtu_present: %d\n  p_cfg->mtu: %d\n", __func__, l2cap_cid, p_cfg->result, p_cfg->mtu_present, p_cfg->mtu );
+    HID_LOGF("[%s] l2cap_cid: 0x%02x\n  p_cfg->result: %d\n  p_cfg->mtu_present: %d\n  p_cfg->mtu: %d\n", __func__, l2cap_cid, p_cfg->result, p_cfg->mtu_present, p_cfg->mtu );
 
     p_cfg->result = L2CAP_CFG_OK;
 
@@ -250,7 +255,7 @@ static void hid_l2cap_config_ind_cback(uint16_t l2cap_cid, tL2CAP_CFG_INFO *p_cf
 
 static void hid_l2cap_disconnect_ind_cback(uint16_t l2cap_cid, bool ack_needed)
 {
-    Serial.printf("[%s] l2cap_cid: 0x%02x\n  ack_needed: %d\n", __func__, l2cap_cid, ack_needed );
+    HID_LOGF("[%s] l2cap_cid: 0x%02x\n  ack_needed: %d\n", __func__, l2cap_cid, ack_needed );
     is_connected = BT_DISCONNECTED;
     // Note: g_callback is intentionally NOT cleared here.
     // Clearing it would cause key presses to be ignored after reconnection.
@@ -258,13 +263,13 @@ static void hid_l2cap_disconnect_ind_cback(uint16_t l2cap_cid, bool ack_needed)
 
 static void hid_l2cap_disconnect_cfm_cback(uint16_t l2cap_cid, uint16_t result)
 {
-    Serial.printf("[%s] l2cap_cid: 0x%02x\n  result: %d\n", __func__, l2cap_cid, result );
+    HID_LOGF("[%s] l2cap_cid: 0x%02x\n  result: %d\n", __func__, l2cap_cid, result );
 }
 
 static void hid_l2cap_data_ind_cback(uint16_t l2cap_cid, BT_HDR *p_buf)
 {
-    Serial.printf("[%s] l2cap_cid: 0x%02x\n", __func__, l2cap_cid );
-    Serial.printf("event=%d len=%d offset=%d layer_specific=%d\n", p_buf->event, p_buf->len, p_buf->offset, p_buf->layer_specific);
+    HID_LOGF("[%s] l2cap_cid: 0x%02x\n", __func__, l2cap_cid );
+    HID_LOGF("event=%d len=%d offset=%d layer_specific=%d\n", p_buf->event, p_buf->len, p_buf->offset, p_buf->layer_specific);
     dump_bin("\tdata=", &p_buf->data[p_buf->offset], p_buf->len);
 
     if( p_buf->len == (HID_L2CAP_MESSAGE_SIZE + 2) && p_buf->data[p_buf->offset] == 0xa1 && p_buf->data[p_buf->offset + 1] == 0x01){
@@ -277,6 +282,9 @@ static void hid_l2cap_data_ind_cback(uint16_t l2cap_cid, BT_HDR *p_buf)
 
 static void dump_bin(const char *p_message, const uint8_t *p_bin, int len)
 {
+  if (isUsbBinaryTransferActive()) {
+    return;
+  }
   Serial.printf("%s", p_message);
   for( int i = 0 ; i < len ; i++ ){
     Serial.printf("%02x ", p_bin[i]);

@@ -1,0 +1,828 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>M5Core2 MIDI Transposer + MIDI Manager 取扱説明書</title>
+<style>
+  :root{
+    --bg:#0e1117;
+    --panel:#161b22;
+    --panel-2:#1c232d;
+    --text:#e6edf3;
+    --muted:#8b949e;
+    --accent:#58a6ff;
+    --accent-2:#79c0ff;
+    --warn:#f0883e;
+    --ok:#3fb950;
+    --bad:#f85149;
+    --line:#30363d;
+    --shadow:0 8px 24px rgba(0,0,0,.35);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:"Hiragino Sans","Yu Gothic UI","Segoe UI","Noto Sans JP",sans-serif;line-height:1.75;-webkit-font-smoothing:antialiased}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  code,kbd{font-family:"Fira Code","Consolas","SFMono-Regular",monospace;background:#0a0d12;color:#d2a8ff;padding:.1em .4em;border:1px solid var(--line);border-radius:6px;font-size:.92em}
+  kbd{background:#21262d;color:#e6edf3;box-shadow:inset 0 -2px 0 #0a0d12}
+  pre{background:#0a0d12;border:1px solid var(--line);border-radius:10px;padding:16px;overflow:auto}
+  pre code{background:transparent;border:0;padding:0;color:#e6edf3}
+
+  /* Cover */
+  .cover{
+    min-height:60vh;
+    display:flex;align-items:center;justify-content:center;flex-direction:column;
+    background:radial-gradient(circle at 30% 30%, #1f6feb33, transparent 60%),
+               radial-gradient(circle at 70% 70%, #f0883e22, transparent 60%),
+               linear-gradient(135deg,#0d1117,#161b22 60%,#0d1117);
+    border-bottom:1px solid var(--line);
+    text-align:center;padding:80px 24px 64px;
+  }
+  .cover .badge{display:inline-block;padding:6px 14px;border:1px solid var(--accent);color:var(--accent-2);border-radius:999px;font-size:.85rem;letter-spacing:.05em;margin-bottom:18px}
+  .cover h1{font-size:clamp(1.6rem,4vw,2.6rem);margin:0 0 8px;letter-spacing:.02em}
+  .cover h2{font-size:clamp(1rem,2vw,1.2rem);font-weight:400;color:var(--muted);margin:0 0 32px}
+  .cover .meta{color:var(--muted);font-size:.92rem}
+  .cover .meta b{color:var(--text)}
+
+  /* Layout */
+  main{max-width:1080px;margin:0 auto;padding:32px 24px 96px}
+  section{margin:64px 0;scroll-margin-top:24px}
+  h1.section-title{
+    font-size:1.6rem;border-left:6px solid var(--accent);padding:6px 14px;margin:0 0 20px;
+    background:linear-gradient(90deg,#1f6feb22,transparent);
+  }
+  h2{font-size:1.25rem;margin:36px 0 12px;color:var(--accent-2);border-bottom:1px solid var(--line);padding-bottom:6px}
+  h3{font-size:1.05rem;margin:24px 0 8px;color:#e6edf3}
+  p{margin:.5em 0}
+
+  /* TOC */
+  nav.toc{
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:14px;
+    padding:20px 24px;margin:48px 0;
+    box-shadow:var(--shadow);
+  }
+  nav.toc h3{margin:0 0 12px;color:var(--accent-2)}
+  nav.toc ol{margin:0;padding-left:24px;columns:2;column-gap:32px}
+  nav.toc ol li{margin:.2em 0;break-inside:avoid}
+  nav.toc ol li a{color:var(--text)}
+  nav.toc ol li a:hover{color:var(--accent-2)}
+  @media (max-width:680px){nav.toc ol{columns:1}}
+
+  /* Cards */
+  .grid{display:grid;gap:18px}
+  .grid.cols-2{grid-template-columns:1fr 1fr}
+  .grid.cols-3{grid-template-columns:repeat(3,1fr)}
+  .grid.cols-4{grid-template-columns:repeat(4,1fr)}
+  @media (max-width:780px){.grid.cols-2,.grid.cols-3,.grid.cols-4{grid-template-columns:1fr}}
+  .card{
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:12px;
+    padding:18px;
+  }
+  .card h3{margin-top:0}
+
+  /* Screenshot frame */
+  figure.shot{
+    margin:18px 0;text-align:center;
+  }
+  figure.shot .frame{
+    display:inline-block;padding:14px;background:#000;border-radius:18px;
+    border:2px solid #2a2a2a;
+    box-shadow:0 16px 32px rgba(0,0,0,.5), inset 0 0 0 4px #111;
+    position:relative;
+  }
+  figure.shot .frame::before{
+    content:"";position:absolute;top:50%;right:-22px;transform:translateY(-50%);
+    width:8px;height:38px;background:#2a2a2a;border-radius:0 4px 4px 0;
+  }
+  figure.shot img{display:block;width:480px;max-width:80vw;height:auto;image-rendering:pixelated;border-radius:6px}
+  figure.shot figcaption{margin-top:10px;color:var(--muted);font-size:.92rem}
+  figure.shot.large img{width:560px}
+
+  /* Side-by-side */
+  .pair{display:grid;grid-template-columns:1fr 1fr;gap:24px;align-items:center}
+  @media (max-width:780px){.pair{grid-template-columns:1fr}}
+
+  /* Tables */
+  table{border-collapse:collapse;width:100%;margin:14px 0;background:var(--panel);border-radius:8px;overflow:hidden;font-size:.96rem}
+  th,td{padding:10px 14px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:#1f6feb22;color:var(--accent-2);font-weight:600}
+  tr:last-child td{border-bottom:0}
+
+  /* Buttons */
+  .btn-icon{
+    display:inline-flex;align-items:center;justify-content:center;
+    width:42px;height:42px;border-radius:50%;
+    background:#21262d;color:var(--text);border:2px solid var(--line);
+    font-weight:700;margin:0 4px;
+  }
+  .btn-icon.A{border-color:#3fb950;color:#3fb950}
+  .btn-icon.B{border-color:#f0883e;color:#f0883e}
+  .btn-icon.C{border-color:#58a6ff;color:#58a6ff}
+
+  /* Tag */
+  .tag{display:inline-block;padding:2px 10px;border-radius:999px;font-size:.78rem;font-weight:600;margin-right:6px}
+  .tag.short{background:#3fb95022;color:#3fb950;border:1px solid #3fb95055}
+  .tag.long{background:#f0883e22;color:#f0883e;border:1px solid #f0883e55}
+  .tag.touch{background:#58a6ff22;color:#58a6ff;border:1px solid #58a6ff55}
+  .tag.bypass{background:#3fb95022;color:#3fb950;border:1px solid #3fb95055}
+  .tag.active{background:#f8514922;color:#f85149;border:1px solid #f8514955}
+
+  /* Callouts */
+  .callout{border-left:5px solid var(--accent);background:#1f6feb14;padding:14px 18px;margin:18px 0;border-radius:0 10px 10px 0}
+  .callout.warn{border-left-color:var(--warn);background:#f0883e14}
+  .callout.tip{border-left-color:var(--ok);background:#3fb95014}
+  .callout.bad{border-left-color:var(--bad);background:#f8514914}
+  .callout b.label{display:inline-block;margin-right:8px;color:var(--accent-2)}
+  .callout.warn b.label{color:var(--warn)}
+  .callout.tip b.label{color:var(--ok)}
+  .callout.bad b.label{color:var(--bad)}
+
+  /* Step list */
+  ol.steps{counter-reset:step;list-style:none;padding-left:0}
+  ol.steps>li{
+    counter-increment:step;position:relative;padding:14px 14px 14px 56px;
+    background:var(--panel);border:1px solid var(--line);border-radius:10px;margin:10px 0;
+  }
+  ol.steps>li::before{
+    content:counter(step);
+    position:absolute;left:14px;top:14px;
+    width:32px;height:32px;border-radius:50%;
+    background:var(--accent);color:#0d1117;font-weight:700;
+    display:flex;align-items:center;justify-content:center;
+  }
+
+  /* Flow diagram */
+  .flow{
+    display:flex;align-items:stretch;justify-content:center;flex-wrap:wrap;gap:8px;
+    background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:24px;margin:18px 0;
+  }
+  .flow .node{
+    background:#0d1117;border:2px solid var(--accent);color:var(--accent-2);
+    padding:14px 22px;border-radius:10px;font-weight:700;min-width:120px;text-align:center;
+  }
+  .flow .node.in{border-color:#3fb950;color:#3fb950}
+  .flow .node.out{border-color:#f0883e;color:#f0883e}
+  .flow .arrow{align-self:center;font-size:1.6rem;color:var(--muted)}
+
+  /* Header anchor area */
+  .anchor-header{
+    display:flex;flex-wrap:wrap;align-items:flex-end;gap:24px;
+    background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px;
+  }
+  .anchor-header .lead{flex:1 1 280px;min-width:240px}
+
+  /* Footer */
+  footer{
+    border-top:1px solid var(--line);
+    color:var(--muted);text-align:center;padding:36px 16px;font-size:.9rem;margin-top:80px;
+  }
+
+  /* Header annotation */
+  .annot{
+    display:flex;flex-wrap:wrap;gap:12px 20px;
+    padding:10px 14px;background:#0a0d12;border:1px dashed var(--line);border-radius:8px;
+    color:var(--muted);font-size:.9rem;margin:8px 0;
+  }
+  .annot b{color:var(--text)}
+</style>
+</head>
+<body>
+
+<header class="cover">
+  <span class="badge">USER MANUAL</span>
+  <h1>M5Core2 MIDI Transposer + MIDI Manager</h1>
+  <h2>転調機能と MIDI メッセージ管理を一台で行うパフォーマンスツール</h2>
+  <div class="meta">
+    Version: 2026-04 / 対応ハード: <b>M5Stack Core2</b> / 接続: <b>USB MIDI / Bluetooth MIDI</b>
+  </div>
+</header>
+
+<main>
+
+<!-- ===== TOC ===== -->
+<nav class="toc">
+  <h3>目次</h3>
+  <ol>
+    <li><a href="#about">この製品でできること</a></li>
+    <li><a href="#hardware">本体の見方とボタン</a></li>
+    <li><a href="#screen-layout">共通画面の見方</a></li>
+    <li><a href="#operation">基本操作のルール</a></li>
+    <li><a href="#mode-direct">DIRECT モード</a></li>
+    <li><a href="#mode-key">KEY モード</a></li>
+    <li><a href="#mode-instant">INSTANT モード</a></li>
+    <li><a href="#mode-sequence">SEQUENCE モード</a></li>
+    <li><a href="#midi-manager">MIDI Manager とは</a></li>
+    <li><a href="#mode-filter">FILTER モード</a></li>
+    <li><a href="#mode-mapper">MAPPER モード</a></li>
+    <li><a href="#bypass">BYPASS と ACTIVE</a></li>
+    <li><a href="#flow">MIDI 処理の流れ</a></li>
+    <li><a href="#serial">PC 連携 (USB シリアル)</a></li>
+    <li><a href="#tips">困ったときに</a></li>
+  </ol>
+</nav>
+
+<!-- ===== About ===== -->
+<section id="about">
+  <h1 class="section-title">1. この製品でできること</h1>
+  <p>
+    本機は、<b>M5Stack Core2</b> をベースにした MIDI トランスポーザーです。
+    入ってきた MIDI を、用途に合わせて加工しながら出力できます。
+  </p>
+  <div class="grid cols-3">
+    <div class="card">
+      <h3>転調 (Transpose)</h3>
+      <p>演奏中のキーを半音単位でずらして出力します。<br>
+        4 つの操作モード (<b>DIRECT / KEY / INSTANT / SEQUENCE</b>) を場面で使い分けます。</p>
+    </div>
+    <div class="card">
+      <h3>FILTER</h3>
+      <p>不要な MIDI メッセージを <b>遮断</b> します。<br>
+        例えば「Pitch Bend だけ通したくない」「Ch10 のドラムだけ無視したい」といった処理ができます。</p>
+    </div>
+    <div class="card">
+      <h3>MAPPER</h3>
+      <p>MIDI メッセージを <b>別のメッセージに変換</b> します。<br>
+        例えば「CC#1 を CC#11 に置き換える」「Ch1 を Ch3 に流す」といった変換ができます。</p>
+    </div>
+  </div>
+  <div class="callout tip">
+    <b class="label">POINT</b>
+    本機の処理順序は <code>FILTER → MAPPER → Transpose → MIDI OUT</code> です。
+    <b>FILTER と MAPPER はそれぞれ独立して BYPASS / ACTIVE が切り替えられます。</b>
+    両方を BYPASS にすれば、従来どおりの低遅延な転調処理だけが動きます。
+  </div>
+</section>
+
+<!-- ===== Hardware ===== -->
+<section id="hardware">
+  <h1 class="section-title">2. 本体の見方とボタン</h1>
+  <p>
+    本体の前面には大きく 3 つの物理ボタン
+    <span class="btn-icon A">A</span><span class="btn-icon B">B</span><span class="btn-icon C">C</span>
+    があります。
+    画面はタッチパネルになっており、画面上のボタンも指で押せます。
+  </p>
+
+  <div class="anchor-header">
+    <div class="lead">
+      <h3>3 つの物理ボタンの役割</h3>
+      <table>
+        <tr><th>ボタン</th><th>役割</th></tr>
+        <tr><td><span class="btn-icon A">A</span></td><td>All Notes Off の <b>ON / OFF</b> 切替</td></tr>
+        <tr><td><span class="btn-icon B">B</span></td><td>現在のモードによって役割が変わる<br><span class="tag short">後述</span></td></tr>
+        <tr><td><span class="btn-icon C">C</span></td><td>
+          <span class="tag short">短押し</span> グループ内のモードを順送り<br>
+          <span class="tag long">長押し</span> 転調グループ ⇄ MIDI Manager を切替
+        </td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="callout">
+    <b class="label">B ボタンが面白い</b>
+    B ボタンの役割は「いま何の画面を見ているか」で変化します。<br>
+    例えば DIRECT 画面では <b>レンジ切替</b> ですが、FILTER 画面では <b>Type を順送り</b> になります。
+    各モードの説明にある「B の役割」を確認してください。
+  </div>
+</section>
+
+<!-- ===== Screen layout ===== -->
+<section id="screen-layout">
+  <h1 class="section-title">3. 共通画面の見方</h1>
+  <p>
+    すべての画面の最上段には <b>共通のステータス行</b> が表示されます。
+    このステータス行の意味さえ覚えれば、どの画面でも迷いません。
+  </p>
+
+  <figure class="shot large">
+    <div class="frame">
+      <img src="screenshots/01-direct.png" alt="DIRECT 画面 (共通ヘッダ説明用)">
+    </div>
+    <figcaption>図 3-1: 画面最上段の見方 (DIRECT 画面を例に)</figcaption>
+  </figure>
+
+  <div class="annot">
+    <span><b>左上:</b> タイトル (MIDI Transposer / MIDI Manager)</span>
+    <span><b>右上:</b> 現在の <b>Transpose 値</b></span>
+  </div>
+  <div class="annot">
+    <span><b>2 段目:</b> 物理ボタンのヒント表示 (例: <code>A:AllOff B:Action C:N</code>)</span>
+    <span><b>I:○ O:○:</b> MIDI 入出力カウンタ</span>
+  </div>
+
+  <h3>ステータス行の各文字の意味</h3>
+  <table>
+    <tr><th>表示</th><th>意味</th></tr>
+    <tr><td><code>A:AllOff</code></td><td>A ボタンで All Notes Off の動作を切り替えられる、という意味</td></tr>
+    <tr><td><code>B:Action</code></td><td>B ボタンの現在の役割 (画面ごとに変化)</td></tr>
+    <tr><td><code>C:N</code></td><td>C ボタンに割当中の動作の略称</td></tr>
+    <tr><td><code>I:○</code></td><td>受信した MIDI メッセージ数</td></tr>
+    <tr><td><code>O:○</code></td><td>送信した MIDI メッセージ数</td></tr>
+    <tr><td><code>BT:…</code></td><td>Bluetooth MIDI の接続状態</td></tr>
+  </table>
+</section>
+
+<!-- ===== Operation ===== -->
+<section id="operation">
+  <h1 class="section-title">4. 基本操作のルール</h1>
+
+  <h2>4.1 画面の階層</h2>
+  <p>本機の画面は 2 階層になっています。</p>
+  <div class="flow">
+    <div class="node in">転調グループ</div>
+    <div class="arrow">⇄</div>
+    <div class="node out">MIDI 管理グループ</div>
+  </div>
+  <p>
+    <span class="tag long">C 長押し</span> でグループを切り替えます。<br>
+    <span class="tag short">C 短押し</span> で同じグループ内のモードを順送りします。
+  </p>
+
+  <h2>4.2 グループ内のモード遷移</h2>
+  <div class="grid cols-2">
+    <div class="card">
+      <h3>転調グループ (C 短押しで巡回)</h3>
+      <p style="font-size:1.05rem">
+        <b>DIRECT</b> → <b>KEY</b> → <b>INSTANT</b> → <b>SEQUENCE</b> → DIRECT…
+      </p>
+    </div>
+    <div class="card">
+      <h3>MIDI 管理グループ (C 短押しで往復)</h3>
+      <p style="font-size:1.05rem"><b>FILTER</b> ⇄ <b>MAPPER</b></p>
+    </div>
+  </div>
+  <div class="callout tip">
+    <b class="label">便利</b>
+    <span class="tag long">C 長押し</span> で転調側に戻ると、<b>最後に開いていた転調サブモード</b> が表示されます。
+    SEQUENCE で作業中に MAPPER を見て戻ってきても、ちゃんと SEQUENCE に戻ります。
+  </div>
+</section>
+
+<!-- ===== DIRECT ===== -->
+<section id="mode-direct">
+  <h1 class="section-title">5. DIRECT モード</h1>
+  <p>
+    画面に並ぶ <b>12 個のボタンを直接タップ</b> して転調値を決める、最も直感的なモードです。
+  </p>
+
+  <figure class="shot">
+    <div class="frame">
+      <img src="screenshots/01-direct.png" alt="DIRECT 画面">
+    </div>
+    <figcaption>図 5-1: DIRECT 画面 (中央の青い「0」が現在値)</figcaption>
+  </figure>
+
+  <h3>使い方</h3>
+  <ol class="steps">
+    <li>転調したい数字 (例: <code>+3</code>) のボタンをタップします。</li>
+    <li>選んだ数字が青く反転し、画面右上の <b>Transpose 値</b> が更新されます。</li>
+    <li>すぐに次の入力 MIDI からその転調が反映されます。</li>
+  </ol>
+
+  <h3>B ボタン: レンジ切替</h3>
+  <p>表示する 12 個の値の <b>範囲</b> を切り替えられます。</p>
+  <table>
+    <tr><th>レンジ</th><th>用途</th></tr>
+    <tr><td><code>-5 .. +6</code></td><td>標準。低めも高めも均等にカバー</td></tr>
+    <tr><td><code>0 .. +11</code></td><td>原調から上方向にだけ転調したいとき</td></tr>
+    <tr><td><code>-11 .. 0</code></td><td>原調から下方向にだけ転調したいとき</td></tr>
+  </table>
+</section>
+
+<!-- ===== KEY ===== -->
+<section id="mode-key">
+  <h1 class="section-title">6. KEY モード</h1>
+  <p>
+    <b>キー名</b> (C, D, E… / Am, Bm, …) で転調値を決めるモードです。
+    「曲を G に下げて」と言われたとき、<b>G の鍵盤を押すだけ</b> で済みます。
+  </p>
+
+  <figure class="shot">
+    <div class="frame">
+      <img src="screenshots/02-key.png" alt="KEY 画面">
+    </div>
+    <figcaption>図 6-1: KEY 画面 (上段: メジャーキー、下段: マイナーキー)</figcaption>
+  </figure>
+
+  <h3>使い方</h3>
+  <ol class="steps">
+    <li>上段の鍵盤 (<b>Major Keys (to C)</b>) で <b>原曲のキー</b> をタップします。</li>
+    <li>本機が自動的に C 基準への転調値を計算します。</li>
+    <li>マイナー曲の場合は下段の <b>Minor Keys (to Am)</b> を使います。</li>
+  </ol>
+
+  <h3>B ボタン: 上位転調 / 通常転調 切替</h3>
+  <p>
+    <b>通常転調</b>: 最短距離で目的キーへ近づきます。<br>
+    <b>上位転調</b>: オクターブ上げで盛り上げる演出を行いたいときに使います。
+  </p>
+
+  <div class="callout">
+    <b class="label">例</b>
+    曲が G で書かれていて、ボーカルに合わせて C に直したいときは
+    上段鍵盤の <b>G</b> をタップ。
+    Em の曲を Am に直したいときは下段鍵盤の <b>Em</b> をタップします。
+  </div>
+</section>
+
+<!-- ===== INSTANT ===== -->
+<section id="mode-instant">
+  <h1 class="section-title">7. INSTANT モード</h1>
+  <p>
+    よく使う転調値を <b>巨大なボタンでワンタップ呼び出し</b> するモードです。
+    ライブ中で素早く 1 度や半音だけ動かしたいときに最適です。
+  </p>
+
+  <figure class="shot">
+    <div class="frame">
+      <img src="screenshots/03-instant.png" alt="INSTANT 画面">
+    </div>
+    <figcaption>図 7-1: INSTANT 画面 (上の青枠が現在値)</figcaption>
+  </figure>
+
+  <h3>標準で並んでいる値</h3>
+  <p>
+    <code>0</code> / <code>+1</code> / <code>+2</code> / <code>+3</code> / <code>+5</code> /
+    <code>-1</code> / <code>-2</code> / <code>-3</code> / <code>-5</code>
+  </p>
+  <p>原調 (<code>0</code>) はステージング中に「素のキーへ戻る」ためのリセットボタンとしても使えます。</p>
+
+  <div class="callout tip">
+    <b class="label">向いている場面</b>
+    リハの途中で「もう半音だけ上げて」と言われたとき、視線をそらさずに <code>+1</code> をタップ。
+  </div>
+</section>
+
+<!-- ===== SEQUENCE ===== -->
+<section id="mode-sequence">
+  <h1 class="section-title">8. SEQUENCE モード</h1>
+  <p>
+    <b>転調値の並び (パターン)</b> を作っておき、ステップごとに切り替えていけるモードです。
+    曲の進行 (例: A メロ → サビ → 転調サビ) をあらかじめ仕込んでおけます。
+  </p>
+
+  <figure class="shot">
+    <div class="frame">
+      <img src="screenshots/04-sequence.png" alt="SEQUENCE 画面">
+    </div>
+    <figcaption>図 8-1: SEQUENCE 画面 (中央上部 <b>Pat 01/16</b> が選択中パターン)</figcaption>
+  </figure>
+
+  <h3>画面の構成</h3>
+  <table>
+    <tr><th>場所</th><th>役割</th></tr>
+    <tr><td>上段中央 <code>Pat 01/16</code></td><td>選択中のパターン番号 (左右で切替)</td></tr>
+    <tr><td>左上 <code>SAVE</code> / <code>E</code> など</td><td>SD 保存などの操作</td></tr>
+    <tr><td>中央 数字行</td><td>各ステップの転調値 (青枠が現在ステップ)</td></tr>
+    <tr><td>上下の三角ボタン</td><td>ステップ値を ±1 ずつ調整</td></tr>
+    <tr><td>下段の <code>&lt;</code> <code>&gt;</code></td><td>ステップを 1 つ前後へ移動</td></tr>
+  </table>
+
+  <h3>基本の流れ</h3>
+  <ol class="steps">
+    <li>上の左右ボタンで使うパターン番号 (<b>01〜16</b>) を選びます。</li>
+    <li>編集したいステップ位置の上下三角で値を調整します。</li>
+    <li>本番では下段の <code>&lt;</code> <code>&gt;</code> でステップを進め、<b>その瞬間の値が即時に有効</b> になります。</li>
+    <li>気に入ったら <b>SAVE</b> で SD カードに保存。電源を切っても残ります。</li>
+  </ol>
+  <div class="callout tip">
+    <b class="label">SAVE の挙動</b>
+    <code>SAVE</code> を押すと、まず保存要求がキューに入り、演奏や MIDI 受信が落ち着いた短いアイドル時間に実際の SD 書き込みが行われます。
+    保存完了後に <code>SEQ Saved!</code>、失敗時に <code>SEQ Save Err</code> が表示されます。
+    電源を切る前は、この表示を確認してください。
+  </div>
+</section>
+
+<!-- ===== MIDI Manager ===== -->
+<section id="midi-manager">
+  <h1 class="section-title">9. MIDI Manager とは</h1>
+  <p>
+    転調以外の <b>「不要メッセージのカット」「メッセージ書き換え」</b> を担当する、もう一つのグループです。
+    <span class="tag long">C 長押し</span> で転調グループから移動できます。
+  </p>
+
+  <div class="grid cols-2">
+    <div class="card">
+      <h3>FILTER</h3>
+      <p>条件にマッチした MIDI を <b>その場で破棄</b> します。<br>
+        後段 (MAPPER, Transpose) には届きません。</p>
+    </div>
+    <div class="card">
+      <h3>MAPPER</h3>
+      <p>条件にマッチした MIDI を <b>別のメッセージに書き換え</b> ます。<br>
+        リスト先頭から順に評価し、<b>最初に一致した 1 ルールだけ</b> 適用されます。</p>
+    </div>
+  </div>
+
+  <div class="callout">
+    <b class="label">画面の頭にある 3 つのボタン</b>
+    どちらの画面にも上段に <code>FILTER</code> <code>MAPPER</code> <code>BYPASS / ACTIVE</code> の 3 ボタンがあります。
+    左 2 つでページを切り替え、一番右で <b>そのページの全体 ON / OFF</b> を切り替えます。
+  </div>
+</section>
+
+<!-- ===== FILTER ===== -->
+<section id="mode-filter">
+  <h1 class="section-title">10. FILTER モード</h1>
+  <p>
+    特定の MIDI メッセージを <b>遮断</b> するためのモードです。
+    例えば「ジョイスティックの Pitch Bend が暴れるのでカットしたい」「Ch10 のドラムは流したくない」というケースで使います。
+  </p>
+
+  <div class="pair">
+    <figure class="shot">
+      <div class="frame">
+        <img src="screenshots/05-filter.png" alt="FILTER 画面 (BYPASS)">
+      </div>
+      <figcaption>図 10-1: FILTER (右上が <span class="tag bypass">BYPASS</span>)</figcaption>
+    </figure>
+    <figure class="shot">
+      <div class="frame">
+        <img src="screenshots/06-filter-active.png" alt="FILTER 画面 (ACTIVE)">
+      </div>
+      <figcaption>図 10-2: FILTER (右上が <span class="tag active">ACTIVE</span>)</figcaption>
+    </figure>
+  </div>
+
+  <h3>画面の構成</h3>
+  <table>
+    <tr><th>段</th><th>内容</th></tr>
+    <tr><td>上段</td><td><code>FILTER</code> / <code>MAPPER</code> ページ切替 + <code>BYPASS / ACTIVE</code> 切替</td></tr>
+    <tr><td>中段</td><td>登録済みルール一覧 (例: <code>1 - ALL CtrlChg</code>)</td></tr>
+    <tr><td>下段操作</td><td><code>DIS</code> 無効化, <code>ADD</code> 追加, <code>DEL</code> 削除, <code>UP</code> / <code>DOWN</code> 並べ替え</td></tr>
+    <tr><td>最下段編集</td><td>選択中ルールの <code>Type</code> と <code>Ch</code> を変更</td></tr>
+  </table>
+
+  <h3>B ボタン: Type 順送り</h3>
+  <p>FILTER 画面の <span class="btn-icon B">B</span> ボタンは、選択中ルールの <code>Type</code> を一段階進める専用ボタンです。タップで切り替えるよりも素早く目的の Type に到達できます。</p>
+
+  <h3>選べるメッセージ Type</h3>
+  <p>
+    <code>NoteOff</code>, <code>NoteOn</code>, <code>KeyPrs</code>, <code>PrgChg</code>, <code>CtrlChg</code>,
+    <code>ChPrs</code>, <code>Bend</code>, <code>SysEx</code>, <code>MTC</code>, <code>SongPos</code>,
+    <code>SongSel</code>, <code>TuneReq</code>, <code>Clock</code>, <code>Start</code>, <code>Cont</code>,
+    <code>Stop</code>, <code>ActSn</code>, <code>Reset</code>
+  </p>
+
+  <h3 id="filter-example">設定例: 全チャンネルの Pitch Bend を遮断する</h3>
+  <ol class="steps">
+    <li><span class="tag long">C 長押し</span> で MIDI Manager に入り、必要なら <span class="tag short">C 短押し</span> で <b>FILTER</b> を開きます。</li>
+    <li>下段の <code>ADD</code> をタップしてルールを 1 つ追加します。中段一覧に新しいルールが現れます。</li>
+    <li>追加したルールをタップして選択 (青ハイライトになります)。</li>
+    <li>最下段の <code>Type</code> をタップ、または <span class="btn-icon B">B</span> を何度か押して <code>Bend</code> に合わせます。</li>
+    <li>その下の <code>Ch</code> を <code>ALL</code> にします (全チャンネル対象)。</li>
+    <li><code>EN/DIS</code> を <b>EN (有効)</b> にします。</li>
+    <li>上段右の <code>BYPASS</code> を <b>ACTIVE</b> に切り替えます (<span class="tag bypass">BYPASS</span> → <span class="tag active">ACTIVE</span>)。</li>
+    <li>これで Pitch Bend は全部遮断されます。<b>ACTIVE / BYPASS を切り替えるだけで効果比較できます。</b></li>
+  </ol>
+
+  <div class="callout warn">
+    <b class="label">注意</b>
+    FILTER でブロックされたメッセージは <b>後段の MAPPER / Transpose に渡りません</b>。
+    例えば <code>NoteOn</code> をブロックしてしまうと、転調処理にも届かなくなります。
+  </div>
+</section>
+
+<!-- ===== MAPPER ===== -->
+<section id="mode-mapper">
+  <h1 class="section-title">11. MAPPER モード</h1>
+  <p>
+    入力メッセージを <b>別の MIDI メッセージへ書き換える</b> モードです。
+    1 つのルールは <b>PG1 (変換元条件)</b> と <b>PG2 (変換先設定)</b> の 2 ページから構成されます。
+  </p>
+
+  <div class="pair">
+    <figure class="shot">
+      <div class="frame">
+        <img src="screenshots/07-mapper-pg1.png" alt="MAPPER PG1 (変換元)">
+      </div>
+      <figcaption>図 11-1: MAPPER <b>PG1</b> ページ (変換元)</figcaption>
+    </figure>
+    <figure class="shot">
+      <div class="frame">
+        <img src="screenshots/08-mapper-pg2.png" alt="MAPPER PG2 (変換先)">
+      </div>
+      <figcaption>図 11-2: MAPPER <b>PG2</b> ページ (変換先)</figcaption>
+    </figure>
+  </div>
+
+  <h3>PG1 (変換元) と PG2 (変換先) の項目</h3>
+  <table>
+    <tr><th>項目</th><th>意味</th><th>備考</th></tr>
+    <tr><td><code>Type</code></td><td>メッセージ種別</td><td>FILTER と同じリスト</td></tr>
+    <tr><td><code>Ch</code></td><td>チャンネル</td><td>PG2 では <code>KEEP</code> で「元のまま」を意味する</td></tr>
+    <tr><td><code>Data1</code></td><td>1 バイト目データ (例: CC 番号、ノート番号)</td><td><code>ANY</code> = どれでも一致 / <code>KEEP</code> = 元の値を保つ</td></tr>
+    <tr><td><code>Min</code> / <code>Max</code></td><td>値の範囲</td><td>レンジ変換に使う</td></tr>
+  </table>
+
+  <h3>B ボタン: PG1 ⇄ PG2 切替</h3>
+  <p>MAPPER 画面の <span class="btn-icon B">B</span> ボタンを押すと、<b>変換元 (PG1)</b> と <b>変換先 (PG2)</b> をワンタッチで往復できます。</p>
+
+  <h3>評価順 (とても重要)</h3>
+  <div class="callout">
+    <b class="label">最初に一致した 1 ルールだけが適用されます。</b>
+    <code>UP</code> / <code>DOWN</code> でルールの並び順を変えると、優先順位を変えられます。
+    <b>リストの上にあるルールほど優先</b> です。
+  </div>
+
+  <h3 id="mapper-example">設定例: CC#1 (Mod) を CC#11 (Expression) に置き換える</h3>
+  <ol class="steps">
+    <li>MAPPER 画面で <code>ADD</code> をタップし、ルールを追加。一覧で選択しておきます。</li>
+    <li><span class="btn-icon B">B</span> を押して <b>PG1</b> を表示。</li>
+    <li>PG1 で次のように設定: <br>
+      <code>Type = CtrlChg</code> / <code>Ch = ALL</code> / <code>Data1 = 1</code> / <code>Min = 0</code> / <code>Max = 127</code>
+    </li>
+    <li>もう一度 <span class="btn-icon B">B</span> を押して <b>PG2</b> へ移動。</li>
+    <li>PG2 で次のように設定: <br>
+      <code>Type = CtrlChg</code> / <code>Ch = KEEP</code> / <code>Data1 = 11</code> / <code>Min = 0</code> / <code>Max = 127</code>
+    </li>
+    <li><code>EN/DIS</code> でルールを <b>EN</b> に。</li>
+    <li>上段右の <code>BYPASS</code> → <code>ACTIVE</code> に切り替えるとすぐ反映されます。</li>
+  </ol>
+
+  <div class="callout tip">
+    <b class="label">レンジ変換</b>
+    PG1 の <code>Min/Max</code> と PG2 の <code>Min/Max</code> を別の範囲にすれば、
+    <b>0–127 を 0–63 に圧縮する</b> ような変換も可能です。
+  </div>
+
+  <div class="callout warn">
+    <b class="label">補足</b>
+    現状の <code>SysEx</code> は <b>FILTER 対象</b> ですが、ペイロードの変換 (MAPPER) には対応していません。
+  </div>
+</section>
+
+<!-- ===== Bypass ===== -->
+<section id="bypass">
+  <h1 class="section-title">12. BYPASS と ACTIVE</h1>
+  <p>
+    FILTER と MAPPER は <b>独立して</b> ON / OFF できます。
+    上段右の大ボタンが <span class="tag bypass">BYPASS</span> のときは <b>素通し</b>、
+    <span class="tag active">ACTIVE</span> のときは <b>機能が有効</b> です。
+  </p>
+
+  <div class="grid cols-2">
+    <div class="card">
+      <h3>BYPASS の使いどころ</h3>
+      <ul>
+        <li>効果がない状態と比較したいとき</li>
+        <li>低遅延の純粋な転調動作だけを使いたいとき</li>
+        <li>設定を残したまま一時的に止めたいとき</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>ACTIVE の使いどころ</h3>
+      <ul>
+        <li>FILTER / MAPPER の効果を演奏に反映させるとき</li>
+        <li>本番ステージのメイン状態</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="callout tip">
+    <b class="label">即時切替</b>
+    上段右の大ボタンを 1 タップするだけで切り替わります。
+    AB 比較が一瞬でできるので、効果検証に便利です。
+  </div>
+</section>
+
+<!-- ===== Flow ===== -->
+<section id="flow">
+  <h1 class="section-title">13. MIDI 処理の流れ</h1>
+  <p>受信から送信までの順序は固定です。途中で BYPASS された段はそのままスルーされます。</p>
+
+  <div class="flow">
+    <div class="node in">MIDI IN</div>
+    <div class="arrow">→</div>
+    <div class="node">FILTER</div>
+    <div class="arrow">→</div>
+    <div class="node">MAPPER</div>
+    <div class="arrow">→</div>
+    <div class="node">Transpose</div>
+    <div class="arrow">→</div>
+    <div class="node out">MIDI OUT</div>
+  </div>
+
+  <h3>段ごとの動作概要</h3>
+  <table>
+    <tr><th>段</th><th>動き</th></tr>
+    <tr><td><b>FILTER</b></td><td>条件にマッチしたメッセージを破棄。BYPASS なら全部スルー。</td></tr>
+    <tr><td><b>MAPPER</b></td><td>最初に一致した 1 ルールだけ適用して書き換え。BYPASS なら全部スルー。</td></tr>
+    <tr><td><b>Transpose</b></td><td>主に Note On / Note Off に対して、現在の Transpose 値ぶん音程を上下。</td></tr>
+    <tr><td><b>All Notes Off</b></td><td>16ch 全部に対して送出される (A ボタンで ON/OFF 切替)。</td></tr>
+  </table>
+</section>
+
+<!-- ===== Serial ===== -->
+<section id="serial">
+  <h1 class="section-title">14. PC 連携 (USB シリアル)</h1>
+  <p>
+    本機は USB シリアルから操作できます。
+    将来、PC 側で大画面 GUI を作る際に、本体の UI をそのまま遠隔操作できるよう設計されています。
+  </p>
+
+  <h3>接続条件</h3>
+  <table>
+    <tr><th>項目</th><th>値</th></tr>
+    <tr><td>ボーレート</td><td><code>115200 bps</code></td></tr>
+    <tr><td>改行</td><td><code>LF</code> または <code>CRLF</code></td></tr>
+    <tr><td>確認コマンド</td><td><code>HELP</code> でコマンド一覧が返ってくる</td></tr>
+  </table>
+
+  <h3>主なコマンド</h3>
+  <table>
+    <tr><th>コマンド</th><th>機能</th></tr>
+    <tr><td><code>HELP</code></td><td>コマンド一覧表示</td></tr>
+    <tr><td><code>STATUS</code></td><td>現在モード, Transpose 値, FILTER/MAPPER 状態, 入出力カウンタを 1 行で返す</td></tr>
+    <tr><td><code>REDRAW</code></td><td>画面を再描画</td></tr>
+    <tr><td><code>BUTTON A</code> / <code>B</code> / <code>C</code></td><td>物理ボタン押下を再現</td></tr>
+    <tr><td><code>BUTTON C LONG</code></td><td>C 長押しを再現 (グループ切替)</td></tr>
+    <tr><td><code>TOUCH x y</code></td><td>画面の (x, y) をタップ</td></tr>
+    <tr><td><code>MODE DIRECT / KEY / INSTANT / SEQUENCE</code></td><td>転調モードへ直接ジャンプ</td></tr>
+    <tr><td><code>MODE FILTER / MAPPER</code></td><td>MIDI Manager 内のページへ直接ジャンプ</td></tr>
+    <tr><td><code>GROUP TRANSPOSE / MIDI</code></td><td>グループを直接指定</td></tr>
+    <tr><td><code>SET TRANSPOSE n</code></td><td>転調値を直接設定</td></tr>
+    <tr><td><code>INFO SCREEN</code></td><td>画面サイズ情報を取得</td></tr>
+    <tr><td><code>SCREENSHOT PPM</code></td><td>現在画面を PPM 形式で取得</td></tr>
+    <tr><td><code>SCREENSHOT RGB888</code></td><td>現在画面を生 RGB888 で取得</td></tr>
+  </table>
+
+  <h3>SCREENSHOT のレスポンス形式</h3>
+  <pre><code>OK SCREENSHOT format=PPM width=320 height=240 bytes=230415
+&lt;バイナリ本体&gt;
+OK SCREENSHOT_DONE
+</code></pre>
+  <p>このしくみにより、PC 側のスクリプトやアプリから現在画面を画像として取り込めます。</p>
+
+  <div class="callout tip">
+    <b class="label">活用イメージ</b>
+    <ol style="margin:.4em 0 0 1.2em">
+      <li><code>INFO SCREEN</code> で画面サイズを得る</li>
+      <li><code>SCREENSHOT PPM</code> で現状を取得</li>
+      <li><code>TOUCH x y</code> や <code>BUTTON ...</code> で UI を操作</li>
+      <li>再度 <code>SCREENSHOT</code> で結果確認</li>
+    </ol>
+  </div>
+</section>
+
+<!-- ===== Tips ===== -->
+<section id="tips">
+  <h1 class="section-title">15. 困ったときに</h1>
+
+  <table>
+    <tr><th>症状</th><th>確認ポイント</th></tr>
+    <tr>
+      <td>転調が効かない</td>
+      <td>
+        FILTER が <b>NoteOn / NoteOff を遮断</b> していないか確認。<br>
+        FILTER の上段が <span class="tag active">ACTIVE</span> だと、有効化中のルール全部が動きます。
+      </td>
+    </tr>
+    <tr>
+      <td>音が出ない</td>
+      <td>
+        MAPPER で <code>NoteOn</code> を別の Type に書き換えていないか確認。<br>
+        FILTER と MAPPER の両方を <code>BYPASS</code> にして、転調だけが効くか試してみる。
+      </td>
+    </tr>
+    <tr>
+      <td>B ボタンの動きが画面ごとに違う</td>
+      <td>
+        画面共通ヘッダの <code>B:○○</code> 表示で現在の役割が確認できます (3 章参照)。
+      </td>
+    </tr>
+    <tr>
+      <td>SEQUENCE が保存されない</td>
+      <td>
+        SD カードの状態を確認し、<code>SAVE</code> 後に <code>SEQ Saved!</code> が出るまで待ってください。
+        演奏中は保存要求だけが先に入り、実際の書き込みは MIDI が少し落ち着いた時点で行われます。
+      </td>
+    </tr>
+    <tr>
+      <td>PC からの操作が反応しない</td>
+      <td>
+        ボーレートが <b>115200</b> か、改行コードが <code>LF</code> / <code>CRLF</code> か確認。
+        まず <code>HELP</code> を送って応答が返るかチェック。
+      </td>
+    </tr>
+  </table>
+
+  <div class="callout">
+    <b class="label">それでも解決しないとき</b>
+    USB シリアルから <code>STATUS</code> を送ると、内部の状態を 1 行で取得できます。
+    その内容を添えて開発者に問い合わせると、原因の切り分けが早く進みます。
+  </div>
+</section>
+
+</main>
+
+<footer>
+  M5Core2 MIDI Transposer + MIDI Manager &nbsp;/&nbsp; User Manual &nbsp;/&nbsp; 2026-04
+</footer>
+
+</body>
+</html>
