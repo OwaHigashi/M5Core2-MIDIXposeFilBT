@@ -1,27 +1,95 @@
-# M5Core-MIDITransposerBT
+# M5Core-MIDIXposeFilBT
 
-M5Core2 を使った MIDI トランスポーザー兼 MIDI メッセージ管理ツールです。  
-従来の転調機能に加えて、`MIDI Manager` として `FILTER` と `MAPPER` を追加しています。
+M5Core2 + M5 MIDI Module2 (外付け MIDI モジュール、SAM2695 搭載) を使った **MIDI 演奏機 / トランスポーザー / メッセージ管理ツール / SMF プレーヤー** です。
+起動直後は `PLAY` モード (MIDI Module2 内蔵 GM 音源を直接鳴らす) に入り、`C` 長押しで転調機能・MIDI 加工機能、`C` 短押しで SMF プレーヤーへ移れます。
 
-現在のスケッチ本体は [M5Core2-MIDIXposeFilBT.ino](/D:/M5/M5Core2-MIDIXposeFilBT/M5Core2-MIDIXposeFilBT.ino) です。
+現在のスケッチ本体は [M5Core2-MIDIXposeFilBT.ino](./M5Core2-MIDIXposeFilBT.ino) です。
 
-## 概要
+> **姉妹プロジェクト**: M5 Unit MIDI (Port A 接続) を使う UM 版は [`../M5Core2-MIDIXposeFilBTUM`](../M5Core2-MIDIXposeFilBTUM) です。
+> ソースは MIDI ピン定義を除いてほぼ同一になっています。
 
-入力された MIDI メッセージに対して、次の順序で処理します。
+## ハードウェア
+
+- **本体**: M5Stack Core2
+- **音源**: M5 MIDI Module2 (外付け、SAM2695 搭載)
+- **接続**: Core2 の GPIO に MIDI Module2 を結線
+- **UART**: G13=RX / G14=TX, 31250 bps (`Serial2`)
+- I2C を解放する必要はありません (Port A は使用しないため)。
+
+## 起動スプラッシュ
+
+電源投入時に約 4 秒のオープニングが流れます。
+"OWAMIDICON" のロゴが虹色グローで脈動し、上下のグラデーションバーがスイープイン、ローディングバーがゆっくり充填します。
+
+## 概要 — 演奏 (PLAY) モード
+
+起動直後の基本モードです。MIDI Module2 内蔵 GM 音源を直接鳴らせます。
+
+- 外部 MIDI キーボードから届いた Note は、`FILTER / MAPPER / Transpose` を経由せずそのまま発音されます。
+- 画面の音色名バーをタップすると 128 音色から選択できます (Page 切替対応)。
+- `VOL- / VOL+` で CC#7 を、`PRG- / PRG+` で Program を、`PB- / PB+` で Pitch Bend を、`SUS` で CC#64 を、`INIT` で再初期化を送れます。
+- `TEST TONE` を押すと、SD カードの `/SMF/testtone.smf` (または `.mid` / `.midi`) を優先して再生します。該当ファイルがない場合は `CDEFGABC` の代替フレーズが鳴ります。
+- `PLAY` 画面に入った時点で Roland `GS Reset` を送り、現在の `Volume` / `Program` / `Pitch Bend` / `Sustain` を再送します。
+- `PLAY` 中でも `MIDI IN` を継続監視し、外部 MIDI 入力をミックスできます。
+
+## 概要 — SMF プレーヤー
+
+`PLAY` 中に `C` 短押しで切り替わる **SMF プレーヤー画面**です。
+SD カードの `/smf` (または `/SMF`) フォルダにある `.mid` / `.smf` ファイルを再生します。
+
+- **16 チャンネル分の鍵盤を画面下部に表示**します。再生中は Note On に応じてキーが緑 (白鍵) / オレンジ (黒鍵) で点灯します。
+- **System Exclusive メッセージにも対応**します (受信したペイロードはそのまま MIDI OUT に流れます)。
+- 内部の SMF パーサは `MD_MIDIFile` ライブラリ (本リポジトリ `src/MD_MIDIFile/` 同梱) を使用しています。
+- `A` で前曲、`B` で再生 / 停止、`C` 短押しで次曲、`C` 長押しで `PLAY` に戻ります。
+- 曲終了で自動的に次の曲へ進みます。
+- 入室時に SD バスを `SD.h` から `SdFat` に一旦譲渡し、退出時に戻します。
+
+## 概要 — 転調 / MIDI 管理
+
+`PLAY` / SMF プレーヤー以外のモードでは、入力された MIDI メッセージに対して次の順序で処理します。
 
 1. `FILTER`
 2. `MAPPER`
 3. `Transpose`
 4. MIDI OUT
 
-`FILTER` と `MAPPER` はそれぞれ独立して `BYPASS` / `ACTIVE` を切り替えられます。  
+`FILTER` と `MAPPER` はそれぞれ独立して `BYPASS` / `ACTIVE` を切り替えられます。
 両方を `BYPASS` にすれば、従来どおりの低遅延な転調処理だけを使えます。
 
 ## モード構成
 
-画面は 2 階層構成です。
+画面は `演奏`、`SMF プレーヤー`、`転調`、`MIDI 管理` の 4 つを軸にした構成です。
+グループ移動は次のとおりです:
 
-### 1. 転調グループ
+- `C` 短押し (PLAY モード時): `演奏 -> SMF プレーヤー`
+- `C` 長押し (SMF プレーヤー時): `SMF プレーヤー -> 演奏`
+- `C` 長押し (PLAY モード時以外): `演奏 -> 転調 -> MIDI 管理 -> 演奏 ...`
+
+### 0. 演奏モード (PLAY)
+
+MIDI Module2 内蔵 SAM2695 を直接鳴らすモードです。
+
+操作:
+
+- 画面音色名バー: 128 音色ピッカーを開く
+- `VOL- / VOL+`: CC#7 を 8 ステップ単位 (0–127)
+- `PRG- / PRG+`: Program 番号を 1 つ前後
+- `PB- / PB+`: Pitch Bend を 256 ステップ単位 (0–16383, 中央 8192)
+- `SUS`: CC#64 (Sustain) を ON / OFF
+- `INIT`: GS Reset → Volume / Program / Bend / Sustain を再送
+- `TEST TONE`: SD `/SMF/testtone.smf` を再生 (未配置時は `CDEFGABC`)
+- `B`: 初期化 (`INIT` と同じ)
+- `C` 短押し: **SMF プレーヤーを開く**
+- `C` 長押し: `演奏 -> 転調`
+
+### 1. SMF プレーヤー (新規)
+
+- `A` 短押し: 前の曲
+- `B` 短押し: 再生 / 停止トグル
+- `C` 短押し: 次の曲
+- `C` 長押し: `SMF プレーヤー -> 演奏` (再生中は停止し All Notes Off)
+
+### 2. 転調グループ
 
 短押し `C` で次を巡回します。
 
@@ -30,23 +98,25 @@ M5Core2 を使った MIDI トランスポーザー兼 MIDI メッセージ管理
 - `INSTANT`
 - `SEQUENCE`
 
-### 2. MIDI 管理グループ
+### 3. MIDI 管理グループ
 
-長押し `C` で転調グループと往復します。  
+長押し `C` で `転調 -> MIDI 管理` に移ります。
 短押し `C` で次を巡回します。
 
 - `FILTER`
 - `MAPPER`
 
-長押し `C` はグループ切替だけを行い、転調側へ戻るときは最後に使っていた転調サブモードへ戻ります。
+M5 MIDI Module2 を接続している場合は、ここで処理した MIDI をそのまま外付け音源から発音できます。
+MIDI フィルタやマッパーを使いながら、実音を確認できます。
 
 ## ハードウェアボタン
 
 ### 共通
 
-- `A`: All Notes Off の有効/無効切替
-- `C` 短押し: 現在グループ内の次モードへ
-- `C` 長押し: `転調グループ <-> MIDI 管理グループ`
+- `A`: All Notes Off の有効/無効切替 (SMF プレーヤー中は前曲)
+- `B`: モード別アクション (PLAY: INIT / SMF: 再生停止 / FILTER: Type 送り / 他)
+- `C` 短押し: 現在グループ内の次モードへ (PLAY: SMF へ / SMF: 次曲)
+- `C` 長押し: グループ巡回 (`演奏 -> 転調 -> MIDI 管理`) / SMF 中は `演奏` へ戻る
 
 ### 転調グループ中の `B`
 
@@ -67,7 +137,7 @@ M5Core2 を使った MIDI トランスポーザー兼 MIDI メッセージ管理
 
 ### DIRECT
 
-12 ボタンの直接選択方式です。  
+12 ボタンの直接選択方式です。
 現在レンジ内の転調値をそのまま選択します。
 
 ### KEY
@@ -90,14 +160,14 @@ M5Core2 を使った MIDI トランスポーザー兼 MIDI メッセージ管理
 
 ### SEQUENCE
 
-複数ステップの転調値パターンを順番に呼び出します。  
+複数ステップの転調値パターンを順番に呼び出します。
 ステップ値編集、ステップ移動、パターン切替、SD 保存に対応しています。
 
 ## MIDI Manager
 
 ### FILTER
 
-不要な MIDI メッセージをブロックします。  
+不要な MIDI メッセージをブロックします。
 一致したメッセージは `MAPPER` と `Transpose` に進まず、その場で破棄されます。
 
 現状のルール定義項目:
@@ -110,33 +180,18 @@ M5Core2 を使った MIDI トランスポーザー兼 MIDI メッセージ管理
 - `UP`
 - `DOWN`
 
-`Type` はタップまたは `B` ボタンで順送りします。  
+`Type` はタップまたは `B` ボタンで順送りします。
 `Ch` は `ALL` または `Ch1..Ch16` を切り替えます。
 
 #### 対応メッセージ種別
 
-- `NoteOff`
-- `NoteOn`
-- `KeyPrs` (Key Pressure)
-- `PrgChg` (Program Change)
-- `CtrlChg` (Control Change)
-- `ChPrs` (Channel Pressure)
-- `Bend` (Pitch Bend)
-- `SysEx`
-- `MTC`
-- `SongPos`
-- `SongSel`
-- `TuneReq`
-- `Clock`
-- `Start`
-- `Cont`
-- `Stop`
-- `ActSn`
-- `Reset`
+- `NoteOff` / `NoteOn` / `KeyPrs` / `PrgChg` / `CtrlChg` / `ChPrs` / `Bend`
+- `SysEx` / `MTC` / `SongPos` / `SongSel` / `TuneReq`
+- `Clock` / `Start` / `Cont` / `Stop` / `ActSn` / `Reset`
 
 ### MAPPER
 
-MIDI メッセージの再割り当て/変換を行います。  
+MIDI メッセージの再割り当て/変換を行います。
 リスト先頭から順に評価し、最初に一致したルールだけを適用します。
 
 現状のルール定義項目:
@@ -148,32 +203,39 @@ MIDI メッセージの再割り当て/変換を行います。
 - `DOWN`
 - `PG1/PG2`
 
-#### PG1
+#### PG1 (変換元) / PG2 (変換先)
 
 - `Type`
 - `Ch`
 - `Data1`
 - `Min`
 - `Max`
-
-#### PG2
-
-- `Type`
-- `Ch`
-- `Data1`
-- `Min`
-- `Max`
-
-意味は次のとおりです。
-
-- `PG1`: 変換元条件
-- `PG2`: 変換先設定
 
 補足:
 
 - `Data1` は `ANY` / `KEEP` を使う項目があります
 - `Min/Max` は値レンジ変換に使います
 - `FILTER` の後に `MAPPER` が動作します
+
+`tests/test_midi_mapper.cpp` に `MAPPER` 単体の動作検証ハーネス (PC ホストでビルド) を同梱しています。
+`tests/build_and_run.sh` でビルド & 実行できます。
+
+## 画面サンプル
+
+| 画面 | スクリーンショット |
+|------|--------------------|
+| PLAY モード | `screenshots/00-play.png` |
+| 音色ピッカー | `screenshots/00-play-picker.png` |
+| DIRECT | `screenshots/01-direct.png` |
+| KEY | `screenshots/02-key.png` |
+| INSTANT | `screenshots/03-instant.png` |
+| SEQUENCE | `screenshots/04-sequence.png` |
+| FILTER (BYPASS) | `screenshots/05-filter.png` |
+| FILTER (ACTIVE) | `screenshots/06-filter-active.png` |
+| MAPPER PG1 | `screenshots/07-mapper-pg1.png` |
+| MAPPER PG2 | `screenshots/08-mapper-pg2.png` |
+| **SMF Player (停止)** | `screenshots/09-smf-stop.png` |
+| **SMF Player (再生中)** | `screenshots/10-smf-playing.png` |
 
 ## 基本的な使い方
 
@@ -182,6 +244,13 @@ MIDI メッセージの再割り当て/変換を行います。
 1. 長押し `C` で `MIDI Manager` に入っている場合は、もう一度長押し `C` で転調グループへ戻します。
 2. 必要に応じて短押し `C` で `DIRECT` / `KEY` / `INSTANT` / `SEQUENCE` を選びます。
 3. `MIDI Manager` を経由させたくない場合は、`FILTER` と `MAPPER` の両方を `BYPASS` にして使います。
+
+### SMF を再生する場合
+
+1. SD カードに `/smf` または `/SMF` フォルダを作り、`.mid` / `.smf` ファイルを置きます。
+2. 起動後 `PLAY` モードで `C` 短押し → SMF プレーヤー画面が開きます (初回はスキャンに数秒かかります)。
+3. `A` / `C` 短押しで曲を選択、`B` で再生 / 停止。
+4. 戻るには `C` 長押し。
 
 ### FILTER を設定する場合
 
@@ -211,7 +280,7 @@ MIDI メッセージの再割り当て/変換を行います。
 
 ## タッチ操作
 
-`FILTER` / `MAPPER` / `BYPASS(ACTIVE)` は上段の大ボタンです。  
+`FILTER` / `MAPPER` / `BYPASS(ACTIVE)` は上段の大ボタンです。
 一覧から対象ルールを選び、下段の操作ボタンと編集ボックスで設定します。
 
 現状の UI 方針:
@@ -221,6 +290,8 @@ MIDI メッセージの再割り当て/変換を行います。
 - 下段: ルール操作
 - 最下段: 編集項目
 
+SMF プレーヤー画面はタッチ操作なし、`A` / `B` / `C` ボタンのみです。
+
 ## MIDI 処理仕様メモ
 
 - Realtime / Common メッセージも分類して処理
@@ -228,24 +299,39 @@ MIDI メッセージの再割り当て/変換を行います。
 - `MAPPER` は最初に一致した 1 ルールを適用
 - `Transpose` は主に Note On / Note Off へ適用
 - `All Notes Off` は全 16ch に送信
+- SMF 再生はファイル内のテンポ/ティック情報に従い、SysEx も含めて送出
 
 現状の制限:
 
 - `SysEx` はフィルタ対象だが、ペイロード変換は未実装
+- SMF プレーヤー入室中は他機能の SD カード書き込みが一時停止します (退出時に復帰)
 
 ## ファイル構成
 
-- [M5Core2-MIDIXposeFilBT.ino](/D:/M5/M5Core2-MIDIXposeFilBT/M5Core2-MIDIXposeFilBT.ino): 現在のメインスケッチ
+- `M5Core2-MIDIXposeFilBT.ino`: メインスケッチ
 - `src/`: Bluetooth HID 関連コード
+- `src/MD_MIDIFile/`: SMF パーサライブラリ (移植元: `../M5Core2-SMF-Player`)
+- `tests/`: PC ホストで動かす MAPPER テストハーネスとシリアル診断スクリプト
+- `screenshots/`: 各モードの画面キャプチャ
+- `scripts/`: 画面キャプチャ用 PowerShell スクリプト
 
 ## ビルドと書き込み
 
-使用しているボード指定:
+`arduino-cli` はスケッチ名とフォルダ名の一致を要求するため、本リポジトリでは
+ビルド用のサブディレクトリにコピー (またはジャンクションを作成) してからコンパイルしています。
 
 ```bash
-arduino-cli compile --fqbn m5stack:esp32:m5stack_core2 D:\M5\M5Core2-MIDIXposeFilBT
-arduino-cli upload -p COM4 --fqbn m5stack:esp32:m5stack_core2 D:\M5\M5Core2-MIDIXposeFilBT
+# 例: Git Bash 上での 1 セット
+mkdir -p /tmp/sketch_build/M5Core2-MIDIXposeFilBT
+cp M5Core2-MIDIXposeFilBT.ino /tmp/sketch_build/M5Core2-MIDIXposeFilBT/
+cp -r src /tmp/sketch_build/M5Core2-MIDIXposeFilBT/
+
+arduino-cli compile --fqbn m5stack:esp32:m5stack_core2 /tmp/sketch_build/M5Core2-MIDIXposeFilBT
+arduino-cli upload  -p COM3 --fqbn m5stack:esp32:m5stack_core2 /tmp/sketch_build/M5Core2-MIDIXposeFilBT
 ```
+
+`-p` オプションには本機が見えている COM ポート (USB) を指定します
+(`arduino-cli board list` で確認可能)。
 
 ## USB シリアルコマンド
 
@@ -264,12 +350,14 @@ PC から USB シリアルで本体を操作できます。
 - `BUTTON C`
 - `BUTTON C LONG`
 - `TOUCH x y`
+- `MODE PLAY`
 - `MODE DIRECT`
 - `MODE KEY`
 - `MODE INSTANT`
 - `MODE SEQUENCE`
 - `MODE FILTER`
 - `MODE MAPPER`
+- `GROUP PLAY`
 - `GROUP TRANSPOSE`
 - `GROUP MIDI`
 - `SET TRANSPOSE n`
@@ -277,12 +365,13 @@ PC から USB シリアルで本体を操作できます。
 - `SCREENSHOT PPM`
 - `SCREENSHOT RGB888`
 
+`STATUS` は現モード (`mode=PLAY/DIRECT/.../SMF_PLAYER` を含む)、転調値、FILTER/MAPPER の状態、MIDI 入出力カウントなどを 1 行で返します。
+
 ### 使い方の考え方
 
-- `BUTTON` は本体の A/B/C ボタン操作を外部から再現します。
+- `BUTTON` は本体の A/B/C ボタン操作を外部から再現します (SMF プレーヤーへの入退室にも使えます)。
 - `TOUCH x y` は画面の指定座標をタップしたのと同じ扱いです。
-- `MODE` と `GROUP` は、目的の画面へ直接切り替えたいときに使います。
-- `STATUS` は現在モード、転調値、FILTER/MAPPER の状態、MIDI 入出力カウントなどを 1 行で返します。
+- `MODE` と `GROUP` は、目的の画面へ直接切り替えたいときに使います (SMF プレーヤーへの直接遷移は `BUTTON C` を経由します)。
 
 ## スクリーンキャプチャ
 
@@ -305,11 +394,4 @@ OK SCREENSHOT format=PPM width=320 height=240 bytes=230415
 PC 側 GUI で直接扱いやすい、生の `RGB888` バイト列です。
 返し方は `PPM` と同じで、先頭ヘッダだけが `format=RGB888` になります。
 
-### 利用イメージ
-
-1. `INFO SCREEN` で画面サイズを取得
-2. `SCREENSHOT PPM` で現在画面を保存
-3. 必要に応じて `TOUCH x y` や `BUTTON ...` で画面を操作
-4. 再度 `SCREENSHOT ...` を取得
-
-この仕組みにより、後で PC 側から大画面 UI を作るときに、本体画面を見ながら既存 UI をそのまま遠隔操作できます。
+`scripts/capture_screenshots.ps1` (転調系) と `scripts/capture_smf_screenshots.ps1` (SMF プレーヤー) でキャプチャを自動化できます。
