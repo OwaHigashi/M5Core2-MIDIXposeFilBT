@@ -197,7 +197,7 @@
   <h1>M5Core2 MIDI Transposer + MIDI Manager<br>OWAMIDICON</h1>
   <h2>転調機能と MIDI メッセージ管理を一台で行うパフォーマンスツール<br>Programmed by Owa Higashi (おわ/尾和)</h2>
   <div class="meta">
-    Version: 2026-05 / 対応ハード: <b>M5Stack Core2</b> + <b>M5 MIDI Module2 (SAM2695, 外付け)</b> / 接続: <b>USB MIDI / Bluetooth HID フットペダル</b> / 機能: <b>SMF プレーヤー搭載</b>
+    Version: 2026-05 / 対応ハード: <b>M5Stack Core2</b> + <b>M5 MIDI Module2 (外付け、外部音源用)</b> / 接続: <b>USB MIDI / Bluetooth HID フットペダル</b> / 機能: <b>SMF プレーヤー搭載 / PLAY モード無効</b>
   </div>
 </header>
 
@@ -208,7 +208,7 @@
   <h3>目次</h3>
   <ol>
     <li><a href="#about">この製品でできること</a></li>
-    <li><a href="#mode-play">演奏 (PLAY) モード <span class="tag short">起動直後</span></a></li>
+    <li><a href="#mode-play">演奏 (PLAY) モード <span class="tag" style="background:#f8514922;color:#f85149;border:1px solid #f8514955">無効</span></a></li>
     <li><a href="#mode-smf">SMF プレーヤー <span class="tag short">新規</span></a></li>
     <li><a href="#hardware">本体の見方とボタン</a></li>
     <li><a href="#screen-layout">共通画面の見方</a></li>
@@ -232,16 +232,26 @@
 <section id="about">
   <h1 class="section-title">1. この製品でできること</h1>
   <p>
-    本機は、<b>M5Stack Core2</b> + <b>M5 MIDI Module2 (SAM2695, 外付け)</b> をベースにした
-    <b>MIDI 演奏機 / トランスポーザー</b> です。
-    起動直後は <b>演奏 (PLAY) モード</b> に入り、MIDI Module2 内蔵の GM 音源から音を鳴らせます。
-    <span class="tag long">C 長押し</span> で、転調機能や MIDI 加工機能を持つ別グループに移れます。
+    本機は、<b>M5Stack Core2</b> + <b>M5 MIDI Module2 (外付け、本体に音源なし)</b> をベースにした
+    <b>MIDI トランスポーザー / メッセージ管理ツール / SMF プレーヤー</b> です。
+    本体は MIDI 出力のみで、発音は接続先の外部音源 (キーボード・モジュール等) で行います。
+    したがって本リポジトリでは <b>PLAY モード (本体直接発音モード) は無効</b> 化しています
+    (<code>#define MIDIXPOSE_HAS_LOCAL_SYNTH 0</code>)。
+    起動直後は <b>転調グループの DIRECT モード</b> に入り、
+    <span class="tag long">C 長押し</span> で
+    <code>転調 -&gt; MIDI 管理 -&gt; SMF プレーヤー -&gt; 転調 ...</code> の順にグループを巡回します。
   </p>
+  <div class="callout">
+    <b class="label">姉妹プロジェクト</b>
+    M5 Unit MIDI (Port A 接続、内蔵音源あり) を使う UM 版は <code>../M5Core2-MIDIXposeFilBTUM</code> です。
+    ソースは MIDI ピン定義と冒頭の <code>MIDIXPOSE_HAS_LOCAL_SYNTH</code> の値以外、ほぼ同一です。
+  </div>
   <div class="grid cols-4">
-    <div class="card">
-      <h3>演奏 (PLAY) <span class="tag short">新規</span></h3>
-      <p>外部 MIDI キーボードから入った Note を <b>そのまま MIDI Module2 で発音</b> します。
-        画面で 128 音色から選択でき、Volume / Program / Pitch Bend / Sustain も操作できます。</p>
+    <div class="card" style="opacity:.55">
+      <h3>演奏 (PLAY) <span class="tag" style="background:#f8514922;color:#f85149;border:1px solid #f8514955">無効</span></h3>
+      <p>本体内蔵音源を直接鳴らすモード。<br>
+        <b>本リポジトリでは無効</b>です (内蔵音源を持たないハード構成のため)。
+        UM 版でのみ利用可能。</p>
     </div>
     <div class="card">
       <h3>転調 (Transpose)</h3>
@@ -270,27 +280,35 @@
     本機の処理順序は <code>FILTER → MAPPER → Transpose → MIDI OUT</code> です。
     <b>FILTER と MAPPER はそれぞれ独立して BYPASS / ACTIVE が切り替えられます。</b>
     両方を BYPASS にすれば、従来どおりの低遅延な転調処理だけが動きます。
-    <b>PLAY モード</b>のときは外部音源を経由せず、MIDI Module2 内部の SAM2695 が直接発音します。
+    <b>PLAY モード</b>は本リポジトリでは無効化されています (内蔵音源なしのため)。
+    UM 版では PLAY 中は本体内部の SAM2695 が直接発音します。
   </div>
   <div class="callout">
     <b class="label">接続</b>
-    M5 MIDI Module2 は M5Core2 の GPIO に結線して使います (外付け)。<br>
+    M5 MIDI Module2 は M5Core2 の GPIO に結線して使います (外付け、本体に音源なし)。<br>
     UART2 を <code>G13=RX / G14=TX, 31250 bps</code> として使用します。Port A は使いません。<br>
-    Unit MIDI を内蔵で使うバージョンは姉妹プロジェクト <code>../M5Core2-MIDIXposeFilBTUM</code> にあります。
+    発音は接続先の外部音源 (MIDI キーボード・音源モジュール等) で行います。
   </div>
 </section>
 
 <!-- ===== PLAY ===== -->
 <section id="mode-play">
-  <h1 class="section-title">2. 演奏 (PLAY) モード</h1>
+  <h1 class="section-title">2. 演奏 (PLAY) モード <span class="tag" style="background:#f8514922;color:#f85149;border:1px solid #f8514955">本リポジトリでは無効</span></h1>
+  <div class="callout bad">
+    <b class="label">本リポジトリでは無効</b>
+    本機は外付け MIDI Module2 (本体に音源なし) のため、本体直接発音用の PLAY モードは
+    <code>#define MIDIXPOSE_HAS_LOCAL_SYNTH 0</code> で除外されています。
+    起動時は転調グループの DIRECT モードへ直接入り、PLAY モードは長押しサイクルにも含まれません。
+    以下の説明は UM 版 (<code>../M5Core2-MIDIXposeFilBTUM</code>) 用の参考情報です。
+  </div>
   <p>
-    起動直後の <b>基本モード</b> です。M5 MIDI Module2 内蔵の SAM2695 (GM 音源) を直接鳴らします。
-    外部 MIDI キーボードを接続すれば、押した鍵盤の音がそのまま MIDI Module2 から鳴ります。
+    起動直後の <b>基本モード</b> です。本体内蔵 SAM2695 (GM 音源) を直接鳴らします。
+    外部 MIDI キーボードを接続すれば、押した鍵盤の音がそのまま発音できます。
     キーボードがない場合でも、画面下の <code>TEST TONE</code> を押せば SD カードの <code>/SMF/testtone.smf</code> (なければ簡易フレーズ <code>CDEFGABC</code>) が試聴できます。
   </p>
   <div class="callout tip">
     <b class="label">起動スプラッシュ</b>
-    電源投入から PLAY モード表示までの間、約 4 秒の "OWAMIDICON" オープニング (虹色グロー脈動 + スイープインのバー + ローディングバー) が流れます。
+    電源投入直後に約 4 秒の "OWAMIDICON" オープニング (虹色グロー脈動 + スイープインのバー + ローディングバー) が流れます (本リポジトリでも有効)。
   </div>
 
   <div class="pair">
@@ -356,11 +374,18 @@
 <section id="mode-smf">
   <h1 class="section-title">3. SMF プレーヤー <span class="tag short">新規</span></h1>
   <p>
-    PLAY モードで <span class="btn-icon C">C</span> 短押し すると <b>SMF プレーヤー画面</b>に切り替わります。
-    SD カードの <code>/smf</code> または <code>/SMF</code> フォルダにある <code>.mid</code> / <code>.smf</code> ファイルを再生します。
+    本リポジトリでは <b>長押しサイクルの 3 群目</b> として SMF プレーヤー画面に入ります
+    (<code>転調 -&gt; MIDI 管理 -&gt; SMF プレーヤー -&gt; 転調 ...</code>)。
+    SD カードの <code>/smf</code> または <code>/SMF</code> フォルダにある <code>.mid</code> / <code>.smf</code> ファイルを再生し、MIDI Module2 経由で外部音源を鳴らします。
     <b>16 チャンネルの鍵盤を画面下部に表示</b>し、再生中は Note On に応じてキーが緑 (白鍵) / オレンジ (黒鍵) で点灯します。
     System Exclusive メッセージにも対応しており、ペイロードはそのまま MIDI OUT (MIDI Module2) に流れます。
   </p>
+  <div class="callout">
+    <b class="label">UM 版との違い</b>
+    UM 版 (内蔵音源あり) では、<b>PLAY モードからの C 短押し</b> で SMF プレーヤーに入りますが、
+    本リポジトリは PLAY モードが無効なため、<b>長押しサイクル経由</b>での入室になります。
+    画面と操作は UM 版と同じです。
+  </div>
 
   <div class="pair">
     <figure class="shot">
@@ -380,10 +405,10 @@
   <h3>使い方</h3>
   <ol>
     <li>microSD カードに <code>/smf</code> (または <code>/SMF</code>) フォルダを作り、<code>.mid</code> / <code>.smf</code> ファイルを入れる。</li>
-    <li>本体起動後、<b>PLAY モード</b>で <span class="btn-icon C">C</span> を <b>短押し</b> → SMF プレーヤー画面が開く (初回はスキャンに数秒かかる)。</li>
+    <li>本体起動後 (DIRECT モードに入る)、<span class="btn-icon C">C</span> を <b>長押し</b> して <code>転調 -&gt; MIDI 管理 -&gt; SMF プレーヤー</code> の順に進める (初回入室時はスキャンに数秒かかる)。</li>
     <li><span class="btn-icon A">A</span> で前曲、<span class="btn-icon C">C</span> 短押しで次曲を選ぶ。</li>
     <li><span class="btn-icon B">B</span> で再生 / 停止 をトグル。</li>
-    <li>戻るには <span class="btn-icon C">C</span> を <b>長押し</b>。再生中は自動で停止し All Notes Off を送ります。</li>
+    <li>戻るには <span class="btn-icon C">C</span> を <b>長押し</b>。SMF -&gt; 転調 (最後に開いていた転調モード) に戻ります。再生中は自動で停止し All Notes Off を送ります。</li>
   </ol>
 
   <h3>操作早見表</h3>
@@ -392,7 +417,7 @@
     <tr><td><span class="btn-icon A">A</span> 短押し</td><td>前の曲へ (再生中なら次の曲も自動再生)</td></tr>
     <tr><td><span class="btn-icon B">B</span> 短押し</td><td>再生 / 停止トグル</td></tr>
     <tr><td><span class="btn-icon C">C</span> 短押し</td><td>次の曲へ (再生中なら次の曲も自動再生)</td></tr>
-    <tr><td><span class="btn-icon C">C</span> 長押し</td><td>SMF プレーヤーを抜けて PLAY モードへ戻る</td></tr>
+    <tr><td><span class="btn-icon C">C</span> 長押し</td><td>長押しサイクルで <b>転調グループ</b> へ戻る</td></tr>
   </table>
 
   <div class="callout">
@@ -481,28 +506,23 @@
   <h1 class="section-title">6. 基本操作のルール</h1>
 
   <h2>5.1 画面の階層</h2>
-  <p>本機の画面は 3 つのグループに分かれます。</p>
+  <p>本リポジトリの画面は 3 つのグループに分かれます (PLAY モードは無効化)。</p>
   <div class="flow">
-    <div class="node in">演奏 (PLAY)</div>
+    <div class="node in">転調グループ</div>
     <div class="arrow">→</div>
-    <div class="node">転調グループ</div>
+    <div class="node">MIDI 管理グループ</div>
     <div class="arrow">→</div>
-    <div class="node out">MIDI 管理グループ</div>
+    <div class="node out">SMF プレーヤー</div>
     <div class="arrow">↻</div>
   </div>
   <p>
-    <span class="tag long">C 長押し</span> でグループを巡回します (PLAY → 転調 → MIDI 管理 → PLAY)。<br>
-    <span class="tag short">C 短押し</span> で同じグループ内のモードを順送りします。
-    <b>PLAY モードでは <span class="tag short">C 短押し</span> が SMF プレーヤー入口</b>になります。
-    SMF プレーヤー中は <span class="tag long">C 長押し</span> で PLAY に戻ります。
+    <span class="tag long">C 長押し</span> でグループを巡回します (転調 → MIDI 管理 → SMF プレーヤー → 転調 …)。<br>
+    <span class="tag short">C 短押し</span> で同じグループ内のモードを順送りします
+    (SMF プレーヤーでは <b>次曲</b> として動作します)。
   </p>
 
   <h2>5.2 グループ内のモード遷移</h2>
-  <div class="grid cols-4">
-    <div class="card">
-      <h3>演奏グループ</h3>
-      <p style="font-size:1.05rem"><b>PLAY</b> ⇄ <b>SMF プレーヤー</b> (PLAY で C 短押し / SMF で C 長押し)</p>
-    </div>
+  <div class="grid cols-3">
     <div class="card">
       <h3>転調グループ (C 短押しで巡回)</h3>
       <p style="font-size:1.05rem">
@@ -515,7 +535,7 @@
     </div>
     <div class="card">
       <h3>SMF プレーヤー (A/B/C 専用)</h3>
-      <p style="font-size:1.05rem"><b>A</b>=前曲 / <b>B</b>=再生停止 / <b>C 短押し</b>=次曲 / <b>C 長押し</b>=PLAY へ</p>
+      <p style="font-size:1.05rem"><b>A</b>=前曲 / <b>B</b>=再生停止 / <b>C 短押し</b>=次曲 / <b>C 長押し</b>=転調 へ</p>
     </div>
   </div>
   <div class="callout tip">

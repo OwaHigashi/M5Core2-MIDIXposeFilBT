@@ -1,17 +1,19 @@
 # M5Core-MIDIXposeFilBT
 
-M5Core2 + M5 MIDI Module2 (外付け MIDI モジュール、SAM2695 搭載) を使った **MIDI 演奏機 / トランスポーザー / メッセージ管理ツール / SMF プレーヤー** です。
-起動直後は `PLAY` モード (MIDI Module2 内蔵 GM 音源を直接鳴らす) に入り、`C` 長押しで転調機能・MIDI 加工機能、`C` 短押しで SMF プレーヤーへ移れます。
+M5Core2 + M5 MIDI Module2 (外付け MIDI モジュール) を使った **MIDI トランスポーザー / メッセージ管理ツール / SMF プレーヤー** です。
+本機自体には音源を持たないので、本リポジトリでは **PLAY モード (本体で発音するモード) は無効化** されています。
+起動直後は転調グループの `DIRECT` モードに入り、`C` 長押しでグループ巡回 (`転調 -> MIDI 管理 -> SMF プレーヤー -> 転調 ...`) します。
 
 現在のスケッチ本体は [M5Core2-MIDIXposeFilBT.ino](./M5Core2-MIDIXposeFilBT.ino) です。
 
-> **姉妹プロジェクト**: M5 Unit MIDI (Port A 接続) を使う UM 版は [`../M5Core2-MIDIXposeFilBTUM`](../M5Core2-MIDIXposeFilBTUM) です。
-> ソースは MIDI ピン定義を除いてほぼ同一になっています。
+> **姉妹プロジェクト**: M5 Unit MIDI (Port A 接続、内蔵音源あり) を使う UM 版は [`../M5Core2-MIDIXposeFilBTUM`](../M5Core2-MIDIXposeFilBTUM) です。
+> ソースは MIDI ピン定義と冒頭の `#define MIDIXPOSE_HAS_LOCAL_SYNTH` (本リポジトリは `0`) を除いてほぼ同一になっています。
+> このため一方の更新は、原則として両方に反映されます。
 
 ## ハードウェア
 
 - **本体**: M5Stack Core2
-- **音源**: M5 MIDI Module2 (外付け、SAM2695 搭載)
+- **MIDI 出力**: M5 MIDI Module2 (外付け、接続先の外部音源で発音)
 - **接続**: Core2 の GPIO に MIDI Module2 を結線
 - **UART**: G13=RX / G14=TX, 31250 bps (`Serial2`)
 - I2C を解放する必要はありません (Port A は使用しないため)。
@@ -21,32 +23,9 @@ M5Core2 + M5 MIDI Module2 (外付け MIDI モジュール、SAM2695 搭載) を�
 電源投入時に約 4 秒のオープニングが流れます。
 "OWAMIDICON" のロゴが虹色グローで脈動し、上下のグラデーションバーがスイープイン、ローディングバーがゆっくり充填します。
 
-## 概要 — 演奏 (PLAY) モード
+## 概要 — 入力された MIDI の処理
 
-起動直後の基本モードです。MIDI Module2 内蔵 GM 音源を直接鳴らせます。
-
-- 外部 MIDI キーボードから届いた Note は、`FILTER / MAPPER / Transpose` を経由せずそのまま発音されます。
-- 画面の音色名バーをタップすると 128 音色から選択できます (Page 切替対応)。
-- `VOL- / VOL+` で CC#7 を、`PRG- / PRG+` で Program を、`PB- / PB+` で Pitch Bend を、`SUS` で CC#64 を、`INIT` で再初期化を送れます。
-- `TEST TONE` を押すと、SD カードの `/SMF/testtone.smf` (または `.mid` / `.midi`) を優先して再生します。該当ファイルがない場合は `CDEFGABC` の代替フレーズが鳴ります。
-- `PLAY` 画面に入った時点で Roland `GS Reset` を送り、現在の `Volume` / `Program` / `Pitch Bend` / `Sustain` を再送します。
-- `PLAY` 中でも `MIDI IN` を継続監視し、外部 MIDI 入力をミックスできます。
-
-## 概要 — SMF プレーヤー
-
-`PLAY` 中に `C` 短押しで切り替わる **SMF プレーヤー画面**です。
-SD カードの `/smf` (または `/SMF`) フォルダにある `.mid` / `.smf` ファイルを再生します。
-
-- **16 チャンネル分の鍵盤を画面下部に表示**します。再生中は Note On に応じてキーが緑 (白鍵) / オレンジ (黒鍵) で点灯します。
-- **System Exclusive メッセージにも対応**します (受信したペイロードはそのまま MIDI OUT に流れます)。
-- 内部の SMF パーサは `MD_MIDIFile` ライブラリ (本リポジトリ `src/MD_MIDIFile/` 同梱) を使用しています。
-- `A` で前曲、`B` で再生 / 停止、`C` 短押しで次曲、`C` 長押しで `PLAY` に戻ります。
-- 曲終了で自動的に次の曲へ進みます。
-- 入室時に SD バスを `SD.h` から `SdFat` に一旦譲渡し、退出時に戻します。
-
-## 概要 — 転調 / MIDI 管理
-
-`PLAY` / SMF プレーヤー以外のモードでは、入力された MIDI メッセージに対して次の順序で処理します。
+入力された MIDI メッセージは次の順序で処理し、MIDI Module2 経由で外部音源へ流します。
 
 1. `FILTER`
 2. `MAPPER`
@@ -56,67 +35,57 @@ SD カードの `/smf` (または `/SMF`) フォルダにある `.mid` / `.smf` 
 `FILTER` と `MAPPER` はそれぞれ独立して `BYPASS` / `ACTIVE` を切り替えられます。
 両方を `BYPASS` にすれば、従来どおりの低遅延な転調処理だけを使えます。
 
+## 概要 — SMF プレーヤー
+
+SD カードの `/smf` (または `/SMF`) フォルダにある `.mid` / `.smf` ファイルを再生し、MIDI Module2 経由で外部音源を鳴らします。
+
+- **16 チャンネル分の鍵盤を画面下部に表示**します。再生中は Note On に応じてキーが緑 (白鍵) / オレンジ (黒鍵) で点灯します。
+- **System Exclusive メッセージにも対応**します (受信したペイロードはそのまま MIDI OUT に流れます)。
+- 内部の SMF パーサは `MD_MIDIFile` ライブラリ (本リポジトリ `src/MD_MIDIFile/` 同梱) を使用しています。
+- 入室は `C` 長押しによるグループ巡回経由 (`MIDI 管理 -> SMF プレーヤー`)。
+- 退出は `C` 長押し (`SMF プレーヤー -> 転調`)。
+- 内部で SD バスを `SD.h` から `SdFat` に一旦譲渡し、退出時に戻します。
+
 ## モード構成
 
-画面は `演奏`、`SMF プレーヤー`、`転調`、`MIDI 管理` の 4 つを軸にした構成です。
-グループ移動は次のとおりです:
+画面は `転調`、`MIDI 管理`、`SMF プレーヤー` の 3 つのグループで構成されます (PLAY モードはこのハードでは無効)。
 
-- `C` 短押し (PLAY モード時): `演奏 -> SMF プレーヤー`
-- `C` 長押し (SMF プレーヤー時): `SMF プレーヤー -> 演奏`
-- `C` 長押し (PLAY モード時以外): `演奏 -> 転調 -> MIDI 管理 -> 演奏 ...`
+- `C` 長押し: グループ巡回 `転調 -> MIDI 管理 -> SMF プレーヤー -> 転調 ...`
+- `C` 短押し: 現在グループ内の次モードへ
 
-### 0. 演奏モード (PLAY)
+### 1. 転調グループ (起動直後)
 
-MIDI Module2 内蔵 SAM2695 を直接鳴らすモードです。
-
-操作:
-
-- 画面音色名バー: 128 音色ピッカーを開く
-- `VOL- / VOL+`: CC#7 を 8 ステップ単位 (0–127)
-- `PRG- / PRG+`: Program 番号を 1 つ前後
-- `PB- / PB+`: Pitch Bend を 256 ステップ単位 (0–16383, 中央 8192)
-- `SUS`: CC#64 (Sustain) を ON / OFF
-- `INIT`: GS Reset → Volume / Program / Bend / Sustain を再送
-- `TEST TONE`: SD `/SMF/testtone.smf` を再生 (未配置時は `CDEFGABC`)
-- `B`: 初期化 (`INIT` と同じ)
-- `C` 短押し: **SMF プレーヤーを開く**
-- `C` 長押し: `演奏 -> 転調`
-
-### 1. SMF プレーヤー (新規)
-
-- `A` 短押し: 前の曲
-- `B` 短押し: 再生 / 停止トグル
-- `C` 短押し: 次の曲
-- `C` 長押し: `SMF プレーヤー -> 演奏` (再生中は停止し All Notes Off)
-
-### 2. 転調グループ
-
-短押し `C` で次を巡回します。
+`C` 短押しで次を巡回します。
 
 - `DIRECT`
 - `KEY`
 - `INSTANT`
 - `SEQUENCE`
 
-### 3. MIDI 管理グループ
+### 2. MIDI 管理グループ
 
-長押し `C` で `転調 -> MIDI 管理` に移ります。
-短押し `C` で次を巡回します。
+`C` 短押しで次を巡回します。
 
 - `FILTER`
 - `MAPPER`
 
-M5 MIDI Module2 を接続している場合は、ここで処理した MIDI をそのまま外付け音源から発音できます。
-MIDI フィルタやマッパーを使いながら、実音を確認できます。
+ここで処理した MIDI をそのまま MIDI Module2 から出力できます。
+
+### 3. SMF プレーヤー
+
+- `A` 短押し: 前の曲
+- `B` 短押し: 再生 / 停止トグル
+- `C` 短押し: 次の曲
+- `C` 長押し: 転調グループへ戻る (再生中は停止し All Notes Off)
 
 ## ハードウェアボタン
 
 ### 共通
 
 - `A`: All Notes Off の有効/無効切替 (SMF プレーヤー中は前曲)
-- `B`: モード別アクション (PLAY: INIT / SMF: 再生停止 / FILTER: Type 送り / 他)
-- `C` 短押し: 現在グループ内の次モードへ (PLAY: SMF へ / SMF: 次曲)
-- `C` 長押し: グループ巡回 (`演奏 -> 転調 -> MIDI 管理`) / SMF 中は `演奏` へ戻る
+- `B`: モード別アクション (SMF: 再生停止 / FILTER: Type 送り / 他)
+- `C` 短押し: 現在グループ内の次モードへ (SMF: 次曲)
+- `C` 長押し: グループ巡回
 
 ### 転調グループ中の `B`
 
@@ -217,15 +186,12 @@ MIDI メッセージの再割り当て/変換を行います。
 - `Min/Max` は値レンジ変換に使います
 - `FILTER` の後に `MAPPER` が動作します
 
-`tests/test_midi_mapper.cpp` に `MAPPER` 単体の動作検証ハーネス (PC ホストでビルド) を同梱しています。
-`tests/build_and_run.sh` でビルド & 実行できます。
+`tests/test_midi_mapper.cpp` に `MAPPER` 単体の動作検証ハーネス (PC ホストでビルド) を同梱しています (UM 版リポジトリ参照)。
 
 ## 画面サンプル
 
 | 画面 | スクリーンショット |
 |------|--------------------|
-| PLAY モード | `screenshots/00-play.png` |
-| 音色ピッカー | `screenshots/00-play-picker.png` |
 | DIRECT | `screenshots/01-direct.png` |
 | KEY | `screenshots/02-key.png` |
 | INSTANT | `screenshots/03-instant.png` |
@@ -237,25 +203,27 @@ MIDI メッセージの再割り当て/変換を行います。
 | **SMF Player (停止)** | `screenshots/09-smf-stop.png` |
 | **SMF Player (再生中)** | `screenshots/10-smf-playing.png` |
 
+> 注: スクリーンショット (`00-play*` 含む) は UM 版用に作成されたものをそのまま流用しています。本リポジトリでは PLAY モードは表示されません。
+
 ## 基本的な使い方
 
 ### 転調だけを使う場合
 
-1. 長押し `C` で `MIDI Manager` に入っている場合は、もう一度長押し `C` で転調グループへ戻します。
-2. 必要に応じて短押し `C` で `DIRECT` / `KEY` / `INSTANT` / `SEQUENCE` を選びます。
+1. 起動直後は `DIRECT` モードに入っています。
+2. `C` 短押しで `DIRECT` / `KEY` / `INSTANT` / `SEQUENCE` を選びます。
 3. `MIDI Manager` を経由させたくない場合は、`FILTER` と `MAPPER` の両方を `BYPASS` にして使います。
 
 ### SMF を再生する場合
 
 1. SD カードに `/smf` または `/SMF` フォルダを作り、`.mid` / `.smf` ファイルを置きます。
-2. 起動後 `PLAY` モードで `C` 短押し → SMF プレーヤー画面が開きます (初回はスキャンに数秒かかります)。
+2. 起動後、`C` 長押しで `転調 -> MIDI 管理 -> SMF プレーヤー` の順にグループを進めます。
 3. `A` / `C` 短押しで曲を選択、`B` で再生 / 停止。
-4. 戻るには `C` 長押し。
+4. 戻るには `C` 長押し (`SMF プレーヤー -> 転調`)。
 
 ### FILTER を設定する場合
 
-1. 長押し `C` で `MIDI Manager` に入ります。
-2. 短押し `C` で `FILTER` を表示します。
+1. `C` 長押しで `MIDI Manager` に入ります。
+2. `C` 短押しで `FILTER` を表示します。
 3. `ADD` でルールを追加し、対象ルールを一覧から選びます。
 4. `Type` をタップ、または `B` ボタンでブロック対象のメッセージ種別を切り替えます。
 5. `Ch` で `ALL` または `Ch1..Ch16` を選びます。
@@ -264,7 +232,7 @@ MIDI メッセージの再割り当て/変換を行います。
 
 ### MAPPER を設定する場合
 
-1. `MIDI Manager` 内で短押し `C` を使って `MAPPER` を表示します。
+1. `MIDI Manager` 内で `C` 短押しを使って `MAPPER` を表示します。
 2. `ADD` でルールを追加し、対象ルールを一覧から選びます。
 3. `B` ボタンで `PG1` と `PG2` を切り替えます。
 4. `PG1` で変換元の `Type` / `Ch` / `Data1` / `Min` / `Max` を設定します。
@@ -282,13 +250,6 @@ MIDI メッセージの再割り当て/変換を行います。
 
 `FILTER` / `MAPPER` / `BYPASS(ACTIVE)` は上段の大ボタンです。
 一覧から対象ルールを選び、下段の操作ボタンと編集ボックスで設定します。
-
-現状の UI 方針:
-
-- 上段: ページ/バイパス切替
-- 中段: ルール一覧
-- 下段: ルール操作
-- 最下段: 編集項目
 
 SMF プレーヤー画面はタッチ操作なし、`A` / `B` / `C` ボタンのみです。
 
@@ -311,27 +272,20 @@ SMF プレーヤー画面はタッチ操作なし、`A` / `B` / `C` ボタンの
 - `M5Core2-MIDIXposeFilBT.ino`: メインスケッチ
 - `src/`: Bluetooth HID 関連コード
 - `src/MD_MIDIFile/`: SMF パーサライブラリ (移植元: `../M5Core2-SMF-Player`)
-- `tests/`: PC ホストで動かす MAPPER テストハーネスとシリアル診断スクリプト
 - `screenshots/`: 各モードの画面キャプチャ
-- `scripts/`: 画面キャプチャ用 PowerShell スクリプト
+- `scripts/`: 画面キャプチャ用 PowerShell スクリプト (UM 版に同梱)
 
 ## ビルドと書き込み
 
-`arduino-cli` はスケッチ名とフォルダ名の一致を要求するため、本リポジトリでは
-ビルド用のサブディレクトリにコピー (またはジャンクションを作成) してからコンパイルしています。
-
 ```bash
-# 例: Git Bash 上での 1 セット
-mkdir -p /tmp/sketch_build/M5Core2-MIDIXposeFilBT
-cp M5Core2-MIDIXposeFilBT.ino /tmp/sketch_build/M5Core2-MIDIXposeFilBT/
-cp -r src /tmp/sketch_build/M5Core2-MIDIXposeFilBT/
-
-arduino-cli compile --fqbn m5stack:esp32:m5stack_core2 /tmp/sketch_build/M5Core2-MIDIXposeFilBT
-arduino-cli upload  -p COM3 --fqbn m5stack:esp32:m5stack_core2 /tmp/sketch_build/M5Core2-MIDIXposeFilBT
+arduino-cli compile --fqbn m5stack:esp32:m5stack_core2 .
+arduino-cli upload  -p COM3 --fqbn m5stack:esp32:m5stack_core2 .
 ```
 
 `-p` オプションには本機が見えている COM ポート (USB) を指定します
 (`arduino-cli board list` で確認可能)。
+
+ディレクトリ名と `.ino` 名は一致しているので、追加のジャンクション/コピーは不要です。
 
 ## USB シリアルコマンド
 
@@ -339,59 +293,5 @@ PC から USB シリアルで本体を操作できます。
 シリアル速度は `115200bps`、改行は `LF` または `CRLF` です。
 
 起動後に `HELP` を送ると、利用できるコマンド一覧を返します。
-
-### 主なコマンド
-
-- `HELP`
-- `STATUS`
-- `REDRAW`
-- `BUTTON A`
-- `BUTTON B`
-- `BUTTON C`
-- `BUTTON C LONG`
-- `TOUCH x y`
-- `MODE PLAY`
-- `MODE DIRECT`
-- `MODE KEY`
-- `MODE INSTANT`
-- `MODE SEQUENCE`
-- `MODE FILTER`
-- `MODE MAPPER`
-- `GROUP PLAY`
-- `GROUP TRANSPOSE`
-- `GROUP MIDI`
-- `SET TRANSPOSE n`
-- `INFO SCREEN`
-- `SCREENSHOT PPM`
-- `SCREENSHOT RGB888`
-
-`STATUS` は現モード (`mode=PLAY/DIRECT/.../SMF_PLAYER` を含む)、転調値、FILTER/MAPPER の状態、MIDI 入出力カウントなどを 1 行で返します。
-
-### 使い方の考え方
-
-- `BUTTON` は本体の A/B/C ボタン操作を外部から再現します (SMF プレーヤーへの入退室にも使えます)。
-- `TOUCH x y` は画面の指定座標をタップしたのと同じ扱いです。
-- `MODE` と `GROUP` は、目的の画面へ直接切り替えたいときに使います (SMF プレーヤーへの直接遷移は `BUTTON C` を経由します)。
-
-## スクリーンキャプチャ
-
-画面のスクリーンショットは USB シリアル経由で取得できます。
-
-### `SCREENSHOT PPM`
-
-初心者向けのマニュアル作成や静止画保存に向く形式です。
-コマンド送信後、最初に次のようなヘッダ行が返ります。
-
-```text
-OK SCREENSHOT format=PPM width=320 height=240 bytes=230415
-```
-
-その直後に、バイナリの `PPM(P6)` データ本体が流れます。
-指定バイト数を読み切ると、最後に `OK SCREENSHOT_DONE` が返ります。
-
-### `SCREENSHOT RGB888`
-
-PC 側 GUI で直接扱いやすい、生の `RGB888` バイト列です。
-返し方は `PPM` と同じで、先頭ヘッダだけが `format=RGB888` になります。
-
-`scripts/capture_screenshots.ps1` (転調系) と `scripts/capture_smf_screenshots.ps1` (SMF プレーヤー) でキャプチャを自動化できます。
+`STATUS` は現モード (`mode=DIRECT/.../SMF_PLAYER` を含む)、転調値、FILTER/MAPPER の状態、MIDI 入出力カウントなどを 1 行で返します。
+`MODE PLAY` / `GROUP PLAY` コマンドは内部的に PLAY モードへ遷移しますが、本ハードでは音源が無いため画面表示以上の意味はありません (デバッグ用)。
