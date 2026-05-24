@@ -94,3 +94,30 @@ M5Core2 ベースの MIDI トランスポーザーに、MIDI メッセージ管�
 ### 画像取得済み (最新)
 
 - `screenshots/01-direct.ppm` 〜 `08-mapper-pg2.ppm` (各 PPM/PNG セット)
+
+## 2026-05-24
+
+### Button C 短押しを release エッジで発火(長押し群切替ができないバグ修正)
+
+- 症状: 右ボタン(C)の短押しを `M5.BtnC.wasPressed()`(ダウンエッジ)で発火していたため、
+  指が触れた瞬間に短押しが確定し、700ms の長押し判定に到達できず、長押しでしか入れない
+  転調群へ移行できなかった。
+- 修正: 短押しを else(非押下)枝で `M5.BtnC.wasReleasefor(0)`(離した瞬間)に発火し、
+  その押下中に長押しが成立していたら抑止。無効化済み `if (false && ...)` デッドブロックも削除。
+  (.ino diff +15/-42)
+- 由来: 同修正は先に UM 版(../M5Core2-MIDIXposeFilBTUM, commit ab4349c)で実施。README の
+  「一方の更新は両方に反映」方針に従い本機へ反映。PLAY テスト音トグルは PLAY 無効
+  (MIDIXPOSE_HAS_LOCAL_SYNTH 0)のため非該当。
+
+### 横断影響調査(同一ボタンに長押し+down短押しを併用する同種バグ)
+
+- M5Core2-MIDIXposeFilBT(本機): 該当 → 修正
+- M5Core2-MIDIXposeFilBTUM: 既修正(ab4349c)
+- M5Tab-MIDIXposeFil / M5Tab-MIDITransposer: 非該当(M5Unified。Button C は USB シリアル
+  コマンド/タッチ経由で、物理ボタンの down/long 競合がない)
+- M5Core2-PuyoVaders: 非該当(`wasReleased() || pressedFor()` = release エッジで正しい)
+
+### bin 更新
+
+- m5stack:esp32:m5stack_core2 で再コンパイルし SDimg/00MIDIXposeFilBT-Gray.bin を更新
+  (1,415,152 B, 2026-05-24)。
