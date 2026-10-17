@@ -300,6 +300,8 @@ arduino-cli upload  -p COM3 --fqbn m5stack:esp32:m5stack_core2 .
 `-p` オプションには本機が見えている COM ポート (USB) を指定します
 (`arduino-cli board list` で確認可能)。
 
+同梱の `build.cmd` (Git Bash なら `build.sh`) は上の compile のラッパーで、引数なしで実行するとコンパイル後に COM ポートの一覧 (`comports.ps1`、推定デバイス・シリアル番号付き) を表示します。書き込みは `build.cmd --upload -p COM3`。
+
 ディレクトリ名と `.ino` 名は一致しているので、追加のジャンクション/コピーは不要です。
 
 ## USB シリアルコマンド
